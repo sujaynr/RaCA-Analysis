@@ -46,7 +46,7 @@ from utils import (
 # Other
 import import_ipynb
 
-# python3 updatedTrain.py [model (s,t,r,c1, c1u)] [epochs] [val_ratio] [batch_size] [test? -t for true, blank for false]
+# python3 updatedTrain.py [model (s,t,r,c1, c1u)] [epochs] [val_ratio] [batch_size] [test? -t for true, blank for false] 
 
 
 if __name__ == "__main__":
@@ -56,6 +56,8 @@ if __name__ == "__main__":
     parser.add_argument("trainval_ts", type=float, help="Train-validation split ratio (as a percentage)")
     parser.add_argument("batch", type=int, help="Batch Size")
     parser.add_argument("-t", "--test", action="store_true", default=False, help="Use this flag to indicate setting aside the test data")
+    parser.add_argument("--sitesplit", action="store_true", default=False, help="Allow the train/validation split to split individual sites.")
+    parser.add_argument("--trainval_tol", type=float, default=25, help="Tolerance for train/validation split if site splitting is not permitted. Default is 25.")
 
     args = parser.parse_args()
 
@@ -81,8 +83,6 @@ wandb.init(
     project="SOC_ML_Stage2",
     name="oneoptimNov29"  # Change the run name
 )
-
-
 
 
 # (XF, dataI, sample_soc, sample_socsd) = torch.load('../RaCA-data-first100.pt')
@@ -185,18 +185,14 @@ try:
         raise ValueError("Model error, please choose s (standard linear), c1 (1D conv), r (RNN), or t (Transformer)")
 except ValueError as e:
     print(e)
-encoder_model = encoder_model.to(device)
-# pdb.set_trace()
 
-# encoder_optimizer = optim.Adam(encoder_model.parameters(), lr=0.000001, betas=(0.99, 0.999))
+encoder_model = encoder_model.to(device)
 
 # Set up decoder model and optimizer
 decoder_model = LinearMixingDecoder(tFs, tMs, trhorads).to(device)
 
-# decoder_optimizer = optim.Adam(decoder_model.parameters(), lr=0.000001, betas=(0.99, 0.999))
+# Set up optimizer
 combined_optimizer = optim.Adam(list(encoder_model.parameters()) + list(decoder_model.parameters()), lr=0.000001, betas=(0.99, 0.999))
-
-# Rest of the code, but replace 'seedEncoderModel' with 'encoder_model' and 'decoder_model'
 
 lossTrackingEncoder = np.zeros(nepochs);
 lossTrackingDecoder = np.zeros(nepochs);
