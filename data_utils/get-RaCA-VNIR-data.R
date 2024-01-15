@@ -7,8 +7,9 @@ library(reshape2)
 library(cluster)
 library(dplyr)
 
-# seriesNameCSV <- read.csv("RaCA-series-names.csv",sep=',')
-seriesNameCSV <- list('auburn')#,'bbb','christian')
+seriesNameCSV <- read.csv("RaCA-series-names.csv",sep=',')
+#seriesNameCSV <- list('auburn','bbb','christian')
+
 dl <- list()
 
 # for(tser in colnames(seriesNameCSV)) {
@@ -65,4 +66,4 @@ for(tser in seriesNameCSV) {
   })
 }
 
-# write.table(dl, file="./RaCA-dataset-with-locations.txt", row.names=F, sep=",")
+write.table(dl, file="./RaCA-dataset-with-locations.txt", row.names=F, sep=",")
