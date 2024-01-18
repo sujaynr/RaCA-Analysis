@@ -1,25 +1,19 @@
-import import_ipynb
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
-from scipy.stats import gaussian_kde
 import torch
-import torch.nn as nn
-import torch.optim as optim
-import json
-import gc
-from tqdm.notebook import tqdm
-import pickle
-plt.rcParams['text.usetex'] = True
-
 
 def remove_outliers(data, threshold=3):
     z_scores = np.abs((data - data.mean()) / data.std())
     return data[z_scores < threshold]
+
+
 def postProcessSpectrum(xin,xout,refin): # Linear interpolation
     return np.interp(xout, xin, refin)
+
+
 def gaus(mu, sigma, N=1) :
     return np.random.randn(N) * sigma + mu;
+
+
 def genSeedMs(endMemList, endMemMap, NPoints, KEndmembers, msoc) :
     seedMsDict = {}
     for endMem in endMemList : #for every endmember, if avg abundance exists, get seed alpha
@@ -62,14 +56,22 @@ def genSeedMs(endMemList, endMemMap, NPoints, KEndmembers, msoc) :
     del seedMZeros, seedMrem
     
     return seedMs, seedMsDict
+
+
 def fakeTrough(x,mu,sigma) :
     return 0.1*np.exp(-(x-mu)**2/2.0/sigma)
+
+
 def A(ms,rhorads) :
     tA = ms / rhorads
     return (tA.T / np.sum(tA,axis=1)).T
+
+
 def torchA(ms,rhorads) :
     tA = ms / rhorads
     return (tA.t() / torch.sum(tA,axis=1)).t()
+
+
 def calculate_accuracy(predictions, ground_truth):
     # Define your accuracy calculation logic here
     # For example, if you are doing classification:

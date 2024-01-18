@@ -1,64 +1,90 @@
 # Standard libraries
-import json
-import gc
 import pdb
 import time
 import argparse
-import pickle
 
 # Third-party libraries
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
-from scipy.stats import gaussian_kde
-from scipy.stats import truncnorm
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from sklearn.model_selection import train_test_split
+import torch.utils.data as data
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+import h5py
+from tqdm import tqdm
+import wandb
+
 from sklearn.metrics import r2_score
 from sklearn.linear_model import LinearRegression
-from tqdm.notebook import tqdm
-import wandb
 
 # Custom modules
 from models import (
-    EncoderConv1DWithUncertainty, 
+    #EncoderConv1DWithUncertainty, 
     EncoderRNN, 
     EncoderTransformer, 
     EncoderConv1D, 
     LinearMixingEncoder, 
-    LinearMixingDecoder, 
-    LinearMixingModel, 
-    LinearMixingSOCPredictor
-)
-from utils import (
-    remove_outliers, 
-    postProcessSpectrum, 
-    gaus, 
-    genSeedMs, 
-    fakeTrough, 
-    A, 
-    torchA, 
-    calculate_accuracy
+    LinearMixingDecoder
 )
 
-# Other
-import import_ipynb
 
-# python3 updatedTrain.py [model (s,t,r,c1, c1u)] [epochs] [val_ratio] [batch_size] [test? -t for true, blank for false] 
+""" ############################################################################################
+    ### HDF5Dataset
+
+    Description:
+
+        A streaming dataset handler using h5py.
+
+        Example usage:
+        dataset = HDF5Dataset('filename.h5')
+        data_loader = data.DataLoader(dataset, batch_size=64, shuffle=True, num_workers=4)
+"""
+class HDF5Dataset(data.Dataset):
+    def __init__(self, filename, gpu=True):
+        super(HDF5Dataset, self).__init__()
+        self.file_mag = h5py.File(filename, 'r')
+        if gpu :
+            self.dataset = torch.tensor(file_mag['data'][:]).to(device)
+        else :
+            self.dataset = torch.tensor(file_mag['data'][:])
+
+    def __len__(self):
+        return len(self.file_mag.keys())
+
+    def __getitem__(self, index):
+        return torch.tensor(self.dataset[index,:],dtype=torch.float32)
 
 
+""" ############################################################################################
+    To run this script, use the following command:
+        
+        python3 updatedTrain.py [model (s,t,r,c1, c1u)] [epochs] [val_ratio] [batch_size]
+"""
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Training script for different models")
-    parser.add_argument("model", choices=["s", "c1", "c1u", "r", "t"], type=str, help="Choose a model: s = Standard Linear, c1 = 1D CNN, r = RNN, t = Transformer")
-    parser.add_argument("epochs", type=int, help="Number of training epochs")
-    parser.add_argument("trainval_ts", type=float, help="Train-validation split ratio (as a percentage)")
-    parser.add_argument("batch", type=int, help="Batch Size")
-    parser.add_argument("-t", "--test", action="store_true", default=False, help="Use this flag to indicate setting aside the test data")
-    parser.add_argument("--sitesplit", action="store_true", default=False, help="Allow the train/validation split to split individual sites.")
-    parser.add_argument("--trainval_tol", type=float, default=25, help="Tolerance for train/validation split if site splitting is not permitted. Default is 25.")
+    parser.add_argument("--encoderModel", choices=["s", "c1", "c1u", "r", "t"], type=str, help="Choose a model: s = Standard Linear, c1 = 1D CNN, r = RNN, t = Transformer")
+    parser.add_argument("--crossValidationRegion", type=int, default=-1, help="RaCA region number for Leave-One-Region-Out cross-validation.")   
+    parser.add_argument("--bootstrapIndex",        type=int, default=-1, help="Bootstrap sample number for fine-tuning within validation region.")
+    parser.add_argument("--epochs",     type=int, default=10,       help="Number of training epochs")
+    parser.add_argument("--batch",      type=int, default=75,       help="Batch Size")
+    parser.add_argument("--logName",    type=str, default="test",   help="Base name for output files.") 
 
+    parser.add_argument("--noDecoder",      type=bool, default=False, help="Flag to disable decoder model and only consider end-to-end encoder performance.") 
+    parser.add_argument("--disableRhorads", type=bool, default=False, help="Flag to disable conversion of mass abundance to area abundance via rhorads.") 
+    parser.add_argument("--decoderModel",   type=bool, default=False, help="Flag to implement an ANN decoder model in place of the linear mixing model.") 
+    parser.add_argument("--fullFit",        type=bool, default=False, help="Flag to fit the entire dataset, without validation.") 
+
+    parser.add_argument("--spectraSOCLocation",         type=str, default="data_utils/ICLRDataset_RaCASpectraAndSOC.h5", help="File name for soil spectra and SOC numbers.") 
+    parser.add_argument("--splitIndicesLocation",       type=str, default="data_utils/ICLRDataset_splitIndices.h5", help="File name for soil spectrum index, split by region number.") 
+    parser.add_argument("--endmemberSpectraLocation",   type=str, default="data_utils/ICLRDataset_USGSEndmemberSpectra.h5", help="File name for pure endmember spectra and rhorads.") 
+
+    parser.add_argument("--lr",  type=float, default=0.000001, help="Learning rate for Adam optimizer.")
+    parser.add_argument("--b1",  type=float, default=0.99,    help="Beta1 for Adam optimizer.")
+    parser.add_argument("--b2",  type=float, default=0.999,  help="Beta2 for Adam optimizer.")
+
+    parser.add_argument("--finetuneEpochs",     type=int, default=10000,       help="Number of training epochs for the fine-tuning step.")
+
+    
     args = parser.parse_args()
 
     model_choices = {
@@ -69,272 +95,457 @@ if __name__ == "__main__":
         "t": "Transformer"
     }
 
-    print(f"Model: {model_choices[args.model]}")
-    print(f"Epochs: {args.epochs}")
-    print(f"Validation Ratio: {args.trainval_ts}")
-    print(f"Batch Size: {args.batch}")
-    if args.test:
-        print("Setting Aside Test: True")
-    else:
-        print("Setting Aside Test: False")
+    wandb.init(
+        project="ICLR_SOC_Analysis_2024",
+        name=f"{args.logName}_{args.encoderModel}_{args.crossValidationRegion}_{args.bootstrapIndex}_nD{args.noDecoder}_dR{args.disableRhorads}_dM{args.decoderModel}_ff{args.fullFit}",
+        config={
+            "encoderModel": args.encoderModel,
+            "crossValidationRegion": args.crossValidationRegion,
+            "bootstrapIndex": args.bootstrapIndex,
+            "epochs": args.epochs,
+            "batch": args.batch,
+            "noDecoder": args.noDecoder,
+            "disableRhorads": args.disableRhorads,
+            "decoderModel": args.decoderModel,
+            "fullFit": args.fullFit,
+            "spectraSOCLocation": args.spectraSOCLocation,
+            "splitIndicesLocation": args.splitIndicesLocation,
+            "endmemberSpectraLocation": args.endmemberSpectraLocation,
+            "lr": args.lr,
+            "b1": args.b1,
+            "b2": args.b2,
+            "finetuneEpochs": args.finetuneEpochs
+        }
+    )
+        
+    """ ############################################################################################
+        Load datasets
+    """
+    dataset = HDF5Dataset(args.spectraSOCLocation)
+    dataset_size = len(dataset)
 
-wandb.init(
-    # set the wandb project where this run will be logged
-    project="SOC_ML_Stage2",
-    name="oneoptimNov29"  # Change the run name
-)
+    ###
+    # Get training data and validation data indices.
+    # Load the indices file:
+    indices_file = h5py.File(args.splitIndicesLocation, 'r')
 
+    # Get the validation indices for the specified cross-validation region:
+    val_indices = indices_file[f'{args.crossValidationRegion}_indices'][:] if not args.fullFit else None
 
-# (XF, dataI, sample_soc, sample_socsd) = torch.load('../RaCA-data-first100.pt')
-data = np.loadtxt("/home/sujaynair/RaCA-spectra-raw.txt", delimiter=",",dtype=str)
-sample_bd = data[1:,2158].astype('float32') # bulk density
-sample_bdsd = data[1:,2159].astype('float32') # not used
-sample_soc = data[1:,2162].astype('float32')
-sample_socsd = data[1:,2163].astype('float32') # not used
-print("Loaded txt")
+    # Train indices should cover the remaining RaCA regions:
+    train_indices = []
+    for i in range(1,19) :
+        if i == 17 or i == args.crossValidationRegion : continue
+        train_indices = torch.cat(train_indices,indices_file[f'{i}_indices'][:])
 
-XF = np.array([x for x in range(350,2501)]);
+    ###
+    # Load training and validation datasets and prepare batch loaders:
+    training_dataset   = torch.utils.data.Subset(dataset, train_indices)
+    validation_dataset = torch.utils.data.Subset(dataset, val_indices) if not args.fullFit else None
 
-# linearly interpolated, fixed bad pixels
-with open('/home/sujaynair/RaCA-data.pkl', 'rb') as file:
-    dataI = pickle.load(file)
-del data
+    training_data_loader    = data.DataLoader(training_dataset,   batch_size=args.batch, shuffle=True, num_workers=4, drop_last=True)
+    validation_data_loader  = data.DataLoader(validation_dataset, batch_size=args.batch, shuffle=True, num_workers=4, drop_last=True) if not args.fullFit else None
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    ###
+    # Get one instance from the training data loader
+    #tscan = next(iter(training_data_loader))[0][0]
 
-with open('/home/sujaynair/RaCA-SOC-a-spectrum-analysis/RaCA-SOC-a/Step5/Step5FULLMODEL.pkl', 'rb') as file:
-        (model,_,_,_,_,_,dataIndices,msoc,_,_,_) = pickle.load(file)
+    ###
+    # Load the endmember spectra and rhorads:
+    endmember_file  = h5py.File(args.endmemberSpectraLocation, 'r')
+    seedFs          = endmember_file['Fs'][:]
+    seedrrs         = endmember_file['rhorads'][:]
 
-# pdb.set_trace()
-ttrrFull = torch.cat((model.rhorad,model.rrsoc))
-ttmFull  = torch.cat((model.ms,torch.tensor(msoc.tolist()).unsqueeze(1)),dim=1)
-ttmFull  = (ttmFull.t() / torch.sum(ttmFull,axis=1)).t()
-ttfFull  = torch.cat((model.fs,model.fsoc.unsqueeze(0)),dim=0)
-ttIhat   = torch.matmul(torchA(ttmFull,ttrrFull).float(),ttfFull.float())
-# pdb.set_trace()
-rrFullRaCAFit = ttrrFull.detach().numpy()
-msFullRaCAFit = ttmFull.detach().numpy() # used
-FsFullRaCAFit = ttfFull.detach().numpy()
-IhFullRaCAFit = ttIhat.detach().numpy() # used
-del model
-del ttrrFull, ttmFull, ttfFull, ttIhat
-
-KEndmembers = 90
-NPoints = IhFullRaCAFit.shape[0]
-MSpectra = 2151
-
-# Truth-level outputs: regressed abundances from an LMM, these are used for decoder model
-tFs      = torch.tensor(FsFullRaCAFit.tolist()).to(device)
-tMs      = torch.tensor(msFullRaCAFit.tolist()).to(device)
-trhorads = torch.tensor(rrFullRaCAFit.tolist()).to(device)
-
-# Truth-level inputs: Individual spectra
-# tIs = torch.tensor(IhFullRaCAFit.tolist()).to(device)
-tmsoc    = torch.tensor(sample_soc[dataIndices.astype('int')].tolist()).to(device)
-tmsoc    = tmsoc / 100.
-tIs      = torch.tensor(dataI[dataIndices.astype('int')].tolist()).to(device)
-####^ EXACTLY WHAT ARE THESE VARIABLES DOING, ADD COMMENTS
-
-# Split the data into a test set (5%) and the remaining data
-if args.test:
-
-    X_temp, X_test, y_temp, y_test = train_test_split(IhFullRaCAFit, msFullRaCAFit, test_size=0.05, random_state=42)
-
-    # Split the remaining data into training (80%) and validation (20%)
-    X_train, X_val, y_train, y_val = train_test_split(X_temp, y_temp, test_size=args.trainval_ts, random_state=42)
-else:
-    X_train, X_val, y_train, y_val = train_test_split(IhFullRaCAFit, msFullRaCAFit, test_size=args.trainval_ts, random_state=42)
-# pdb.set_trace()
-# Convert the numpy arrays to PyTorch tensors and move them to the appropriate device
-tMs_train = torch.tensor(y_train.tolist())
-tIs_train = torch.tensor(X_train.tolist())
-
-tMs_val = torch.tensor(y_val.tolist())
-tIs_val = torch.tensor(X_val.tolist())
-
-# Create data loaders for training and validation
-train_dataset = torch.utils.data.TensorDataset(tIs_train, tMs_train)
-val_dataset = torch.utils.data.TensorDataset(tIs_val, tMs_val)
-# pdb.set_trace()
-batch_size = args.batch  # You can adjust this as needed
-train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers = 8)
-val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers = 8)
-
-# Training settings, optimizer declarations
-nepochs = args.epochs
-
-# Set up encoder model and optimizer
-try:
-    if args.model == "s":
-        print("Using Standard Linear Model")
-        encoder_model = LinearMixingEncoder(MSpectra, KEndmembers, 512).to(device)
-    elif args.model == "c1":
-        print("Using 1D Conv Model")
-        encoder_model = EncoderConv1D(MSpectra, KEndmembers, 32, 15).to(device) # (M, K, hidden_size, kernel_size)
-    elif args.model == "c1u":
-        print("Using 1D Conv Model with Uncertainties")
-        encoder_model = EncoderConv1DWithUncertainty(MSpectra, KEndmembers, 32, 15).to(device) # (M, K, hidden_size, kernel_size)
-    elif args.model == "r":
-        print("Using RNN Model")
-        encoder_model = EncoderRNN(MSpectra, KEndmembers, 64).to(device) # (M, K, hidden_size)
-    elif args.model == "t":
-        print("Using Transformer Model")
-        # pdb.set_trace()
-        encoder_model = EncoderTransformer(MSpectra, KEndmembers, 64, 4, 2) # (M, K, hidden_size, num_heads, num_layers)
-    else:
-        raise ValueError("Model error, please choose s (standard linear), c1 (1D conv), r (RNN), or t (Transformer)")
-except ValueError as e:
-    print(e)
-
-encoder_model = encoder_model.to(device)
-
-# Set up decoder model and optimizer
-decoder_model = LinearMixingDecoder(tFs, tMs, trhorads).to(device)
-
-# Set up optimizer
-combined_optimizer = optim.Adam(list(encoder_model.parameters()) + list(decoder_model.parameters()), lr=0.000001, betas=(0.99, 0.999))
-
-lossTrackingEncoder = np.zeros(nepochs);
-lossTrackingDecoder = np.zeros(nepochs);
-lossTrackingEncoderV = np.zeros(nepochs)  # Validation losses
-lossTrackingDecoderV = np.zeros(nepochs)  # Validation losses
-lossTrackingDecoderLagrangeFactor = np.zeros(nepochs);
-rrTracking = np.zeros(nepochs);
-
-encoderPreds=[]
-decoderPreds=[]
-means=[]
+    # If we disable rhorads, set them all to 1 so they have no effect
+    if args.disableRhorads : 
+        seedrrs = torch.ones(seedrrs.shape)
 
 
-# train_tIs, val_tIs, train_tmsoc, val_tmsoc = train_test_split(tIs, tmsoc, test_size=args.trainval_ts, random_state=42) # not used
-all_uncertainties = []
+    """ ############################################################################################
+        Prepare models
+    """
 
-#encoderPreds is now samples, encoderUncertainties is now sds
-#maybe add prior to keep predictions close to unit gaus
-# Training loop
-for epoch in tqdm(range(nepochs)):
-    # Log rrsoc
-    rrTracking[epoch] = decoder_model.rrsoc.detach().item()
+    KEndmembers = rhorads.shape[0]
+    MSpectra = Fs.shape[1]
+    NSpectra = len(dataset)
 
-    # Initialize loss variables for this epoch
-    total_encoder_loss = 0.0
-    total_decoder_loss = 0.0
-    total_kl_Loss = 0.0
-    all_uncertainties = []
+    # Wavelength axis
+    XF = torch.tensor([x for x in range(365,2501)]);
 
-    # Batching and training
-    for batch_data in train_loader:
-        # Extract batch data
-        batch_tIs, batch_tmsoc = batch_data
-        batch_tIs = batch_tIs.to(device)
-        batch_tmsoc = batch_tmsoc.to(device)
+    # Generate priors for physical parameters and nuisances
+    seedrrSOC = torch.mean(rhorads[:-1])
+    seedFsoc = torch.ones((MSpectra)) * 0.5
 
-        # Get abundance predictions from the encoder for the batch
-        encoderPreds, encoderUncertainties, mean = encoder_model(batch_tIs) #edit to only have 2nd arg if model is c1u
+    seedrrs[-1] = seedrrSOC
+    seedFs[-1,:] = seedFsoc
 
-        all_uncertainties.extend(encoderUncertainties.detach().cpu().numpy())
+    # Set up encoder model and optimizer
+    try:
+        if args.model == "s":
+            print("Using Standard Linear Model")
+            encoder_model = LinearMixingEncoder(MSpectra, KEndmembers, 512).to(device)
+        elif args.model == "c1":
+            print("Using 1D Conv Model")
+            encoder_model = EncoderConv1D(MSpectra, KEndmembers, 32, 15).to(device) # (M, K, hidden_size, kernel_size)
+        elif args.model == "c1u":
+            print("Using 1D Conv Model with Uncertainties")
+            raise ValueError("Model error, please choose s (standard linear), c1 (1D conv), r (RNN), or t (Transformer)")
+            #encoder_model = EncoderConv1DWithUncertainty(MSpectra, KEndmembers, 32, 15).to(device) # (M, K, hidden_size, kernel_size)
+        elif args.model == "r":
+            print("Using RNN Model")
+            encoder_model = EncoderRNN(MSpectra, KEndmembers, 64).to(device) # (M, K, hidden_size)
+        elif args.model == "t":
+            print("Using Transformer Model")
+            encoder_model = EncoderTransformer(MSpectra, KEndmembers, 64, 4, 2).to(device) # (M, K, hidden_size, num_heads, num_layers)
+        else:
+            raise ValueError("Model error, please choose s (standard linear), c1 (1D conv), r (RNN), or t (Transformer)")
+    except ValueError as e:
+        print(e)
 
-        # Get spectrum predictions from the decoder for the batch
-        # decoderPreds = decoder_model(encoderPreds)
-        decoderPreds = decoder_model(mean)
-        # pdb.set_trace()
-        # Compute encoder loss: sqerr from true Msoc values for the batch
-        # encoder_loss = 1000 * torch.mean((encoderPreds[:, -1] - batch_tmsoc[:, -1]) ** 2)
-        encoder_loss = 1000 * torch.mean((mean[:, -1] - batch_tmsoc[:, -1]) ** 2)
+    # Set up decoder model and optimizer
+    if args.noDecoder:
+        decoder_model = None
+    elif args.decoderModel :
+        decoder_model = nn.Sequential(
+            nn.Linear(KEndmembers, 1),
+            nn.Sigmoid()
+        ).to(device)
+    else :
+        decoder_model = LinearMixingDecoder(seedFs, seedrrs).to(device)
 
-        # Add decoder loss: sqerr from true RaCA spectra for the batch
-        decoder_loss = torch.mean((decoderPreds - batch_tIs) ** 2)
+    # Freeze the rhorads parameter if we are not using it
+    if args.disableRhorads and not args.noDecoder and not args.decoderModel : 
+        decoder_model.rrsoc.requires_grad = False
 
-        # Multiply decoder loss by the Lagrange factor
-        decoder_loss = decoder_loss * decoder_model.computeLagrangeLossFactor()
-        # pdb.set_trace()
-        prior_mean = 1/90
-        prior_sd = 0.1
-        kl_Loss = torch.log(prior_sd / (torch.sqrt(encoderUncertainties) + 1e-6)) + (encoderUncertainties + (mean - prior_mean)**2) / (2 * prior_sd**2) - 0.5
-        kl_Loss = -0.5 * torch.sum(kl_Loss)
-        # Calculate the combined loss
-        # pdb.set_trace()
-        # loss = encoder_loss + decoder_loss + kl_Loss * 0.1 # adjust weight
-        loss = encoder_loss + decoder_loss # adjust weight
-
-        # Backpropagate the gradients for both models
-        combined_optimizer.zero_grad()
-        loss.backward()
-        combined_optimizer.step()
-
-        # Accumulate batch losses
-        total_encoder_loss += encoder_loss.item()
-        total_decoder_loss += decoder_loss.item()
-        # total_kl_Loss += kl_Loss.item()
-
-    # Calculate the average loss for this epoch
-    avg_encoder_loss = total_encoder_loss / len(train_loader)
-    avg_decoder_loss = total_decoder_loss / len(train_loader)
-
-    # Log and print the average losses
-    wandb.log({"Encoder_Training Loss": avg_encoder_loss, "Decoder_Training Loss": avg_decoder_loss})
-    print("Epoch {}: Encoder Loss: {:.4f}, Decoder Loss: {:.4f}".format(epoch, avg_encoder_loss, avg_decoder_loss))
-
-    # Validation Loss
-    with torch.no_grad():
-        # Similar batching process for validation data
-        total_encoder_lossV = 0.0
-        total_decoder_lossV = 0.0
-
-        for batch_dataV in val_loader:
-            batch_val_tIs, batch_val_tmsoc = batch_dataV
-            batch_val_tIs = batch_val_tIs.to(device)
-            batch_val_tmsoc = batch_val_tmsoc.to(device)
-            encoderPredsV, encoderUncertaintiesV, meanV = encoder_model(batch_val_tIs)
-            all_uncertainties.extend(encoderUncertaintiesV.detach().cpu().numpy())
-            # decoderPredsV = decoder_model(encoderPredsV)
-            # encoder_lossV = 1000 * torch.mean((encoderPredsV[:, -1] - batch_val_tmsoc[:, -1]) ** 2)
-            decoderPredsV = decoder_model(meanV)
-            encoder_lossV = 1000 * torch.mean((meanV[:, -1] - batch_val_tmsoc[:, -1]) ** 2)
-            decoder_lossV = torch.mean((decoderPredsV - batch_val_tIs) ** 2)
-            total_encoder_lossV += encoder_lossV.item()
-            total_decoder_lossV += decoder_lossV.item()
-
-        avg_encoder_lossV = total_encoder_lossV / len(val_loader)
-        avg_decoder_lossV = total_decoder_lossV / len(val_loader)
-
-        wandb.log({"Encoder_Validation Loss": avg_encoder_lossV, "Decoder_Validation Loss": avg_decoder_lossV})
-        print("Validation - Encoder Loss: {:.4f}, Decoder Loss: {:.4f}".format(avg_encoder_lossV, avg_decoder_lossV))
-pdb.set_trace()
-from scipy.stats import norm
+    # Set up optimizer
+    combined_optimizer = optim.Adam(list(encoder_model.parameters()) + list([] if args.noDecoder else decoder_model.parameters()), lr=args.lr, betas=(args.b1, args.b2))
 
 
-# # Convert to numpy array
-# all_uncertainties_array = np.array(all_uncertainties)
+    """ ############################################################################################
+        Train models
+    """
 
-# # Scale uncertainties to be between 0 and 1
-# uncertainties_scaled = (all_uncertainties_array - all_uncertainties_array.min()) / (all_uncertainties_array.max() - all_uncertainties_array.min())
+    # Initialize best validation loss
+    best_encoder_lossV = torch.tensor(float("inf"))
 
-# # Calculate the average for each of the 90 columns across all rows
-# average_uncertainties = np.mean(uncertainties_scaled, axis=0)
-# average_uncertainties_n = np.mean(all_uncertainties_array, axis = 0)
-# # Convert to list
-# average_uncertainties_list = average_uncertainties.tolist()
-# average_uncertainties_nlist = average_uncertainties_n.tolist()
+    for epoch in tqdm(range(args.epochs+1)):
+
+        # Initialize loss variables for this epoch
+        total_encoder_loss = 0.0
+        total_decoder_loss = 0.0
+        maxllf = 0.0
+
+        # Batching and training
+        for batch_data in training_data_loader:
+            # Extract batch data
+            batch_tIs, batch_tmsoc = batch_data[:,:-1].to(device), batch_data[:,-1].to(device)
+
+            # Get abundance predictions from the encoder for the batch
+            encoderPreds = encoder_model(batch_tIs)
+
+            # Get spectrum predictions from the decoder for the batch
+            decoderPreds = None if args.noDecoder else decoder_model(encoderPreds)
+
+            # Compute encoder loss: sqerr from true Msoc values for the batch
+            encoder_loss = 1000 * torch.mean((encoderPreds[:, -1] - batch_tmsoc[:, -1]) ** 2)
+
+            # Add decoder loss: sqerr from true RaCA spectra for the batch
+            decoder_loss = 0.0 if args.noDecoder else torch.mean((decoderPreds - batch_tIs) ** 2)
+
+            # Multiply decoder loss by the Lagrange factor
+            llf = 1.0 if args.noDecoder else decoder_model.computeLagrangeLossFactor()
+            if llf > maxllf : maxllf = llf
+
+            # Calculate the combined loss
+            loss = (encoder_loss + decoder_loss) * llf
+
+            # Backpropagate the gradients for both models
+            combined_optimizer.zero_grad()
+            loss.backward()
+            combined_optimizer.step()
+
+            # Accumulate batch losses
+            total_encoder_loss += encoder_loss.item()
+            total_decoder_loss += decoder_loss.item()
+
+        # Calculate the average loss for this epoch
+        avg_encoder_loss = total_encoder_loss / len(training_data_loader)
+        avg_decoder_loss = total_decoder_loss / len(training_data_loader)
+
+        wandb.log({"Encoder_Training_Loss": avg_encoder_loss, 
+                   "Decoder_Training_Loss": avg_decoder_loss, 
+                   "Max_LagrangeLossFactor": maxllf})
+
+        """ ############################################################################################
+            Validate models
+        """
+        # Validation Loss
+        with torch.no_grad():
+
+            if not args.fullFit:
+                # Similar batching process for validation data
+                total_encoder_lossV = 0.0
+                total_decoder_lossV = 0.0
+
+                for batch_dataV in validation_data_loader:
+
+                    batch_val_tIs, batch_val_tmsoc = batch_dataV[:,:-1].to(device), batch_dataV[:,-1].to(device)
+
+                    encoderPredsV = encoder_model(batch_val_tIs)
+                    decoderPredsV = None if args.noDecoder else decoder_model(encoderPredsV)
+                    
+                    encoder_lossV = 1000 * torch.mean((encoderPredsV[:, -1] - batch_val_tmsoc[:, -1]) ** 2)
+                    decoder_lossV = 0 if args.noDecoder else torch.mean((decoderPredsV - batch_val_tIs) ** 2)
+
+                    total_encoder_lossV += encoder_lossV.item()
+                    total_decoder_lossV += decoder_lossV.item()
+
+                avg_encoder_lossV = total_encoder_lossV / len(validation_data_loader)
+                avg_decoder_lossV = total_decoder_lossV / len(validation_data_loader)
+
+                wandb.log({"Encoder_Validation_Loss": avg_encoder_lossV, 
+                           "Decoder_Validation_Loss": avg_decoder_lossV})
+        
+            if epoch % 10000 == 0:
+                # Log in wandb the following on the training and validation sets:
+                #   - Mean Square Error Percentage (MSEP) for encoder model
+                #   - MSEP for decoder model
+                #   - R^2 Score for SOC predictions
+                #   - Bias for SOC predictions
+                #   - Ratio of performance to deviation (RPD) for SOC predictions
+                
+                # Get preds on full training set
+                trainingEncoderPreds = encoder_model(dataset.dataset[train_indices,:-1].to(device))
+                trainingDecoderPreds = None if args.noDecoder else decoder_model(trainingEncoderPreds)
+
+                # Compute metrics for training set
+                trainingMSEP = torch.mean((trainingEncoderPreds[:, -1] - dataset.dataset[train_indices,-1].to(device)) ** 2)
+                trainingR2 = r2_score(batch_tmsoc[:, -1].detach().cpu(), trainingEncoderPreds[:, -1].detach().cpu())
+                trainingBias = torch.mean(trainingEncoderPreds[:, -1] - batch_tmsoc[:, -1])
+                trainingRPD = torch.std(trainingEncoderPreds[:, -1]) / torch.std(batch_tmsoc[:, -1])
+
+                # Log metrics in wandb
+                wandb.log({"Encoder_Training_MSEP": trainingMSEP,
+                            "Encoder_Training_R2": trainingR2,
+                            "Encoder_Training_Bias": trainingBias,
+                            "Encoder_Training_RPD": trainingRPD})
+
+                # Compute metrics for validation set
+                if not args.fullFit:
+                    # Get preds on full val set
+                    validationEncoderPreds = encoder_model(dataset.dataset[val_indices,:-1].to(device))
+                    validationDecoderPreds = None if args.noDecoder else decoder_model(validationEncoderPreds)
+
+                    validationMSEP = torch.mean((validationEncoderPredsV[:, -1] - batch_val_tmsoc[:, -1]) ** 2)
+                    validationR2 = r2_score(batch_val_tmsoc[:, -1].detach().cpu(), validationEncoderPredsV[:, -1].detach().cpu())
+                    validationBias = torch.mean(validationEncoderPredsV[:, -1] - batch_val_tmsoc[:, -1])
+                    validationRPD = torch.std(validationEncoderPredsV[:, -1]) / torch.std(batch_val_tmsoc[:, -1])
+
+                    wandb.log({"Encoder_Validation_MSEP": validationMSEP,
+                            "Encoder_Validation_R2": validationR2,
+                            "Encoder_Validation_Bias": validationBias,
+                            "Encoder_Validation_RPD": validationRPD})
+                
+                # Log decoder model parameters in wandb
+                if not args.noDecoder and not args.decoderModel :
+                    wandb.log({"rrSOC": decoder_model.rrsoc.detach().item()})
+
+                    # Log fsoc graph in wandb
+                    tfsoc = decoder_model.fsoc.detach().item()
+                    fsocTableDat = [[x, y] for (x, y) in zip(XF,tfsoc)]
+                    fsocTable = wandb.Table(data=fsocTableDat, columns=["Wavelength", "SOC Reflectance"])
+                    wandb.log(
+                        {
+                            "Fsoc": wandb.plot.line(
+                                fsocTable, "Wavelength", "SOC Reflectance", title="Regressed SOC Spectrum"
+                            )
+                        }
+                    )
+
+                # Save the model if it is the best so far
+                if avg_encoder_lossV < best_encoder_lossV and not args.fullFit and epoch < args.epochs - 1:
+                    
+                    best_encoder_lossV = avg_encoder_lossV
+
+                    torch.save(encoder_model.state_dict(), f"models/{wandb.name}_encoder_minValMSEP.pt")
+
+                    if not args.noDecoder:
+                        torch.save(decoder_model.state_dict(), f"models/{wandb.name}_decoder_minValMSEP.pt")
+
+        
+    torch.save(encoder_model.state_dict(), f"models/{wandb.name}_encoder_final.pt")
+
+    if not args.noDecoder:
+        torch.save(decoder_model.state_dict(), f"models/{wandb.name}_decoder_final.pt")
 
 
-# # Plot histogram
-# plt.hist(average_uncertainties_list, bins=30, color='blue', edgecolor='k', alpha=0.7)
+    """ ############################################################################################
+        Fine-tune models (TODO)
+    """
+    if not args.fullFit :
+        # # Load the best encoder model
+        # encoder_model.load_state_dict(torch.load(f"models/{wandb.name}_encoder_minValMSEP.pt"))
 
-# # Add labels and title
-# plt.xlabel('Uncertainty')
-# plt.ylabel('Frequency')
-# plt.title('Histogram of Average Uncertainties')
+        # # Load the best decoder model
+        # if not args.noDecoder:
+        #     decoder_model.load_state_dict(torch.load(f"models/{wandb.name}_decoder_minValMSEP.pt"))
 
-# # Show the plot
-# plt.show()
+        # Set up optimizer
+        combined_optimizer = optim.Adam(list(encoder_model.parameters()) + list([] if args.noDecoder else decoder_model.parameters()), lr=args.lr, betas=(args.b1, args.b2))
+
+        # Initialize best validation loss
+        best_encoder_lossV = torch.tensor(float("inf"))
+
+        for epoch in tqdm(range(args.finetuneEpochs+1)):
+
+            # Initialize loss variables for this epoch
+            total_encoder_loss = 0.0
+            total_decoder_loss = 0.0
+            maxllf = 0.0
+
+            # Load bootstrap dataset
+            bootstrap_indices = indices_file[f'{args.crossValidationRegion}_bootstrap_{args.bootstrapIndex}'][:]
+            bootstrap_dataset = torch.utils.data.Subset(dataset, bootstrap_indices)
+            finetune_data_loader  = data.DataLoader(bootstrap_dataset, batch_size=len(bootstrap_dataset), shuffle=True, num_workers=4, drop_last=True)
+
+            # Batching and training
+            for batch_data in finetune_data_loader:
+                # Extract batch data
+                batch_tIs, batch_tmsoc = batch_data[:,:-1].to(device), batch_data[:,-1].to(device)
+
+                # Get abundance predictions from the encoder for the batch
+                #encoderPreds, encoderUncertainties, mean = encoder_model(batch_tIs) #edit to only have 2nd arg if model is c1u
+                encoderPreds = encoder_model(batch_tIs)
+
+                # Get spectrum predictions from the decoder for the batch
+                decoderPreds = None if args.noDecoder else decoder_model(encoderPreds)
+
+                # Compute encoder loss: sqerr from true Msoc values for the batch
+                encoder_loss = torch.mean((encoderPreds[:, -1] - batch_tmsoc[:, -1]) ** 2)
+
+                # Add decoder loss: sqerr from true RaCA spectra for the batch
+                decoder_loss = 0 if args.noDecoder else torch.mean((decoderPreds - batch_tIs) ** 2)
+
+                # Multiply decoder loss by the Lagrange factor
+                llf = 1.0 if args.noDecoder else decoder_model.computeLagrangeLossFactor()
+                if llf > maxllf : maxllf = llf
+
+                # Calculate the combined loss
+                loss = (encoder_loss + decoder_loss) * llf
+
+                # Backpropagate the gradients for both models
+                combined_optimizer.zero_grad()
+                loss.backward()
+                combined_optimizer.step()
+
+                # Accumulate batch losses
+                total_encoder_loss += encoder_loss.item()
+                total_decoder_loss += decoder_loss.item()
+
+            # Calculate the average loss for this epoch
+            avg_encoder_loss = total_encoder_loss / len(finetune_data_loader)
+            avg_decoder_loss = total_decoder_loss / len(finetune_data_loader)
+
+            wandb.log({"Encoder_Finetune_Loss": avg_encoder_loss,
+                       "Decoder_Finetune_Loss": avg_decoder_loss,
+                       "Max_Finetune_LagrangeLossFactor": maxllf})
+    
+            """ ############################################################################################
+                Validate fine-tuned model
+            """
+             # Validation Loss
+            with torch.no_grad():
+
+                # Similar batching process for validation data
+                total_encoder_lossV = 0.0
+                total_decoder_lossV = 0.0
+
+                for batch_dataV in validation_data_loader:
+
+                    batch_val_tIs, batch_val_tmsoc = batch_dataV[:,:-1].to(device), batch_dataV[:,-1].to(device)
+
+                    #encoderPredsV, encoderUncertaintiesV, meanV = encoder_model(batch_val_tIs)
+                    encoderPredsV = encoder_model(batch_val_tIs)
+
+                    decoderPredsV = None if args.noDecoder else decoder_model(encoderPredsV)
+                    encoder_lossV = torch.mean((encoderPredsV[:, -1] - batch_val_tmsoc[:, -1]) ** 2)
+                    decoder_lossV = 0 if args.noDecoder else torch.mean((decoderPredsV - batch_val_tIs) ** 2)
+
+                    total_encoder_lossV += encoder_lossV.item()
+                    total_decoder_lossV += decoder_lossV.item()
+
+                avg_encoder_lossV = total_encoder_lossV / len(validation_data_loader)
+                avg_decoder_lossV = total_decoder_lossV / len(validation_data_loader)
+
+                wandb.log({"Encoder_FinetuneValidation_Loss": avg_encoder_lossV, 
+                          "Decoder_FinetuneValidation_Loss": avg_decoder_lossV})
+            
+                if epoch % 1000 == 0:
+                    # Log in wandb the following on the training and validation sets:
+                    #   - Mean Square Error Percentage (MSEP) for encoder model
+                    #   - MSEP for decoder model
+                    #   - R^2 Score for SOC predictions
+                    #   - Bias for SOC predictions
+                    #   - Ratio of performance to deviation (RPD) for SOC predictions
+                    
+                    # Get preds on full training set
+                    finetuneEncoderPreds = encoder_model(dataset.dataset[bootstrap_indices,:-1].to(device))
+                    finetuneDecoderPreds = None if args.noDecoder else decoder_model(finetuneEncoderPreds)
+
+                    # Compute metrics for training set
+                    finetuneMSEP = torch.mean((finetuneEncoderPreds[:, -1] - dataset.dataset[bootstrap_indices,-1].to(device)) ** 2)
+                    finetuneR2 = r2_score(dataset.dataset[bootstrap_indices,-1].cpu(), finetuneEncoderPreds[:, -1].detach().cpu())
+                    finetuneBias = torch.mean(finetuneEncoderPreds[:, -1] - dataset.dataset[bootstrap_indices,-1])
+                    finetuneRPD = torch.std(finetuneEncoderPreds[:, -1]) / torch.std(dataset.dataset[bootstrap_indices,-1])
+
+                    # Log metrics in wandb
+                    wandb.log({"Encoder_Finetune_MSEP": finetuneMSEP,
+                                "Encoder_Finetune_R2": finetuneR2,
+                                "Encoder_Finetune_Bias": finetuneBias,
+                                "Encoder_Finetune_RPD": finetuneRPD})
+
+                    # Get preds on full val set
+                    validationEncoderPreds = encoder_model(dataset.dataset[val_indices,:-1].to(device))
+                    validationDecoderPreds = None if args.noDecoder else decoder_model(validationEncoderPreds)
+
+                    validationMSEP = torch.mean((validationEncoderPreds[:, -1] - dataset.dataset[val_indices,-1].to(device)) ** 2)
+                    validationR2 = r2_score(dataset.dataset[val_indices,-1].cpu(), validationEncoderPreds[:, -1].detach().cpu())
+                    validationBias = torch.mean(validationEncoderPreds[:, -1] - dataset.dataset[val_indices,-1])
+                    validationRPD = torch.std(validationEncoderPreds[:, -1]) / torch.std(dataset.dataset[val_indices,-1])
+
+                    wandb.log({"Encoder_FinetuneValidation_MSEP": validationMSEP,
+                            "Encoder_FinetuneValidation_R2": validationR2,
+                            "Encoder_FinetuneValidation_Bias": validationBias,
+                            "Encoder_FinetuneValidation_RPD": validationRPD})
+                    
+                    # Log decoder model parameters in wandb
+                    if not args.noDecoder and not args.decoderModel :
+                        wandb.log({"rrSOC": decoder_model.rrsoc.detach().item()})
+
+                        # Log fsoc graph in wandb
+                        tfsoc = decoder_model.fsoc.detach().item()
+                        fsocTableDat = [[x, y] for (x, y) in zip(XF,tfsoc)]
+                        fsocTable = wandb.Table(data=fsocTableDat, columns=["Wavelength", "SOC Reflectance"])
+                        wandb.log(
+                            {
+                                "Fsoc": wandb.plot.line(
+                                    fsocTable, "Wavelength", "SOC Reflectance", title="Regressed SOC Spectrum"
+                                )
+                            }
+                        )
+
+        torch.save(encoder_model.state_dict(), f"models/{wandb.name}_encoder_finetuned.pt")
+
+        if not args.noDecoder:
+            torch.save(decoder_model.state_dict(), f"models/{wandb.name}_decoder_finetuned.pt")    
 
 
+    """ ############################################################################################
+        Cleanup
+    """
+    # Close the HDF5 files
+    indices_file.close()
+    endmember_file.close()
 
-
-total_params = sum(p.numel() for p in encoder_model.parameters())
-print("Total parameters:", total_params)
-total_paramsD = sum(p.numel() for p in decoder_model.parameters())
-print("Total parameters decoder:", total_paramsD)
-
-wandb.finish()
+    # Finish wandb run
+    wandb.finish()
