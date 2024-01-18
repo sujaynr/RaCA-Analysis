@@ -15,7 +15,6 @@ from tqdm import tqdm
 import wandb
 
 from sklearn.metrics import r2_score
-from sklearn.linear_model import LinearRegression
 
 # Custom modules
 from models import (
@@ -24,6 +23,7 @@ from models import (
     EncoderTransformer, 
     EncoderConv1D, 
     LinearMixingEncoder, 
+    ANNDecoder,
     LinearMixingDecoder
 )
 
@@ -44,15 +44,15 @@ class HDF5Dataset(data.Dataset):
         super(HDF5Dataset, self).__init__()
         self.file_mag = h5py.File(filename, 'r')
         if gpu :
-            self.dataset = torch.tensor(file_mag['data'][:]).to(device)
+            self.dataset = torch.tensor(self.file_mag['data'][:]).to(device)
         else :
-            self.dataset = torch.tensor(file_mag['data'][:])
+            self.dataset = torch.tensor(self.file_mag['data'][:])
 
     def __len__(self):
         return len(self.file_mag.keys())
 
     def __getitem__(self, index):
-        return torch.tensor(self.dataset[index,:],dtype=torch.float32)
+        return self.dataset[index,:]
 
 
 """ ############################################################################################
@@ -69,10 +69,10 @@ if __name__ == "__main__":
     parser.add_argument("--batch",      type=int, default=75,       help="Batch Size")
     parser.add_argument("--logName",    type=str, default="test",   help="Base name for output files.") 
 
-    parser.add_argument("--noDecoder",      type=bool, default=False, help="Flag to disable decoder model and only consider end-to-end encoder performance.") 
-    parser.add_argument("--disableRhorads", type=bool, default=False, help="Flag to disable conversion of mass abundance to area abundance via rhorads.") 
-    parser.add_argument("--decoderModel",   type=bool, default=False, help="Flag to implement an ANN decoder model in place of the linear mixing model.") 
-    parser.add_argument("--fullFit",        type=bool, default=False, help="Flag to fit the entire dataset, without validation.") 
+    parser.add_argument("--noDecoder",      default=False, action='store_true', help="Flag to disable decoder model and only consider end-to-end encoder performance.") 
+    parser.add_argument("--disableRhorads", default=False, action='store_true', help="Flag to disable conversion of mass abundance to area abundance via rhorads.") 
+    parser.add_argument("--decoderModel",   default=False, action='store_true', help="Flag to implement an ANN decoder model in place of the linear mixing model.") 
+    parser.add_argument("--fullFit",        default=False, action='store_true', help="Flag to fit the entire dataset, without validation.") 
 
     parser.add_argument("--spectraSOCLocation",         type=str, default="data_utils/ICLRDataset_RaCASpectraAndSOC.h5", help="File name for soil spectra and SOC numbers.") 
     parser.add_argument("--splitIndicesLocation",       type=str, default="data_utils/ICLRDataset_splitIndices.h5", help="File name for soil spectrum index, split by region number.") 
@@ -95,9 +95,11 @@ if __name__ == "__main__":
         "t": "Transformer"
     }
 
+    runName = f"{args.logName}_{args.encoderModel}_{args.crossValidationRegion}_{args.bootstrapIndex}_nD{args.noDecoder}_dR{args.disableRhorads}_dM{args.decoderModel}_ff{args.fullFit}"
+
     wandb.init(
         project="ICLR_SOC_Analysis_2024",
-        name=f"{args.logName}_{args.encoderModel}_{args.crossValidationRegion}_{args.bootstrapIndex}_nD{args.noDecoder}_dR{args.disableRhorads}_dM{args.decoderModel}_ff{args.fullFit}",
+        name=runName,
         config={
             "encoderModel": args.encoderModel,
             "crossValidationRegion": args.crossValidationRegion,
@@ -133,18 +135,18 @@ if __name__ == "__main__":
     val_indices = indices_file[f'{args.crossValidationRegion}_indices'][:] if not args.fullFit else None
 
     # Train indices should cover the remaining RaCA regions:
-    train_indices = []
+    train_indices = None
     for i in range(1,19) :
         if i == 17 or i == args.crossValidationRegion : continue
-        train_indices = torch.cat(train_indices,indices_file[f'{i}_indices'][:])
+        train_indices = torch.tensor(indices_file[f'{i}_indices'][:]) if train_indices is None else torch.cat((train_indices,torch.tensor(indices_file[f'{i}_indices'][:])))
 
     ###
     # Load training and validation datasets and prepare batch loaders:
     training_dataset   = torch.utils.data.Subset(dataset, train_indices)
     validation_dataset = torch.utils.data.Subset(dataset, val_indices) if not args.fullFit else None
 
-    training_data_loader    = data.DataLoader(training_dataset,   batch_size=args.batch, shuffle=True, num_workers=4, drop_last=True)
-    validation_data_loader  = data.DataLoader(validation_dataset, batch_size=args.batch, shuffle=True, num_workers=4, drop_last=True) if not args.fullFit else None
+    training_data_loader    = data.DataLoader(training_dataset,   batch_size=args.batch, shuffle=True, num_workers=0, drop_last=True)
+    validation_data_loader  = data.DataLoader(validation_dataset, batch_size=args.batch, shuffle=True, num_workers=0, drop_last=True) if not args.fullFit else None
 
     ###
     # Get one instance from the training data loader
@@ -153,8 +155,8 @@ if __name__ == "__main__":
     ###
     # Load the endmember spectra and rhorads:
     endmember_file  = h5py.File(args.endmemberSpectraLocation, 'r')
-    seedFs          = endmember_file['Fs'][:]
-    seedrrs         = endmember_file['rhorads'][:]
+    seedFs          = torch.tensor(endmember_file['Fs'][:])
+    seedrrs         = torch.tensor(endmember_file['rhorads'][:])
 
     # If we disable rhorads, set them all to 1 so they have no effect
     if args.disableRhorads : 
@@ -165,15 +167,15 @@ if __name__ == "__main__":
         Prepare models
     """
 
-    KEndmembers = rhorads.shape[0]
-    MSpectra = Fs.shape[1]
+    KEndmembers = seedrrs.shape[0]
+    MSpectra = seedFs.shape[1]
     NSpectra = len(dataset)
 
     # Wavelength axis
     XF = torch.tensor([x for x in range(365,2501)]);
 
     # Generate priors for physical parameters and nuisances
-    seedrrSOC = torch.mean(rhorads[:-1])
+    seedrrSOC = torch.mean(seedrrs[:-1])
     seedFsoc = torch.ones((MSpectra)) * 0.5
 
     seedrrs[-1] = seedrrSOC
@@ -181,20 +183,20 @@ if __name__ == "__main__":
 
     # Set up encoder model and optimizer
     try:
-        if args.model == "s":
+        if args.encoderModel == "s":
             print("Using Standard Linear Model")
             encoder_model = LinearMixingEncoder(MSpectra, KEndmembers, 512).to(device)
-        elif args.model == "c1":
+        elif args.encoderModel == "c1":
             print("Using 1D Conv Model")
             encoder_model = EncoderConv1D(MSpectra, KEndmembers, 32, 15).to(device) # (M, K, hidden_size, kernel_size)
-        elif args.model == "c1u":
+        elif args.encoderModel == "c1u":
             print("Using 1D Conv Model with Uncertainties")
             raise ValueError("Model error, please choose s (standard linear), c1 (1D conv), r (RNN), or t (Transformer)")
             #encoder_model = EncoderConv1DWithUncertainty(MSpectra, KEndmembers, 32, 15).to(device) # (M, K, hidden_size, kernel_size)
-        elif args.model == "r":
+        elif args.encoderModel == "r":
             print("Using RNN Model")
             encoder_model = EncoderRNN(MSpectra, KEndmembers, 64).to(device) # (M, K, hidden_size)
-        elif args.model == "t":
+        elif args.encoderModel == "t":
             print("Using Transformer Model")
             encoder_model = EncoderTransformer(MSpectra, KEndmembers, 64, 4, 2).to(device) # (M, K, hidden_size, num_heads, num_layers)
         else:
@@ -206,10 +208,7 @@ if __name__ == "__main__":
     if args.noDecoder:
         decoder_model = None
     elif args.decoderModel :
-        decoder_model = nn.Sequential(
-            nn.Linear(KEndmembers, 1),
-            nn.Sigmoid()
-        ).to(device)
+        decoder_model = ANNDecoder(MSpectra, KEndmembers, 512).to(device)
     else :
         decoder_model = LinearMixingDecoder(seedFs, seedrrs).to(device)
 
@@ -247,7 +246,7 @@ if __name__ == "__main__":
             decoderPreds = None if args.noDecoder else decoder_model(encoderPreds)
 
             # Compute encoder loss: sqerr from true Msoc values for the batch
-            encoder_loss = 1000 * torch.mean((encoderPreds[:, -1] - batch_tmsoc[:, -1]) ** 2)
+            encoder_loss = 1000 * torch.mean((encoderPreds[:, -1] - batch_tmsoc[:]) ** 2)
 
             # Add decoder loss: sqerr from true RaCA spectra for the batch
             decoder_loss = 0.0 if args.noDecoder else torch.mean((decoderPreds - batch_tIs) ** 2)
@@ -266,7 +265,7 @@ if __name__ == "__main__":
 
             # Accumulate batch losses
             total_encoder_loss += encoder_loss.item()
-            total_decoder_loss += decoder_loss.item()
+            total_decoder_loss += decoder_loss if args.noDecoder else decoder_loss.item()
 
         # Calculate the average loss for this epoch
         avg_encoder_loss = total_encoder_loss / len(training_data_loader)
@@ -294,11 +293,11 @@ if __name__ == "__main__":
                     encoderPredsV = encoder_model(batch_val_tIs)
                     decoderPredsV = None if args.noDecoder else decoder_model(encoderPredsV)
                     
-                    encoder_lossV = 1000 * torch.mean((encoderPredsV[:, -1] - batch_val_tmsoc[:, -1]) ** 2)
+                    encoder_lossV = 1000 * torch.mean((encoderPredsV[:, -1] - batch_val_tmsoc[:]) ** 2)
                     decoder_lossV = 0 if args.noDecoder else torch.mean((decoderPredsV - batch_val_tIs) ** 2)
 
                     total_encoder_lossV += encoder_lossV.item()
-                    total_decoder_lossV += decoder_lossV.item()
+                    total_decoder_lossV += decoder_lossV if args.noDecoder else decoder_lossV.item()
 
                 avg_encoder_lossV = total_encoder_lossV / len(validation_data_loader)
                 avg_decoder_lossV = total_decoder_lossV / len(validation_data_loader)
@@ -320,15 +319,18 @@ if __name__ == "__main__":
 
                 # Compute metrics for training set
                 trainingMSEP = torch.mean((trainingEncoderPreds[:, -1] - dataset.dataset[train_indices,-1].to(device)) ** 2)
-                trainingR2 = r2_score(batch_tmsoc[:, -1].detach().cpu(), trainingEncoderPreds[:, -1].detach().cpu())
-                trainingBias = torch.mean(trainingEncoderPreds[:, -1] - batch_tmsoc[:, -1])
-                trainingRPD = torch.std(trainingEncoderPreds[:, -1]) / torch.std(batch_tmsoc[:, -1])
+                trainingR2 = r2_score(dataset.dataset[train_indices,-1].cpu(), trainingEncoderPreds[:, -1].detach().cpu())
+                trainingBias = torch.mean(trainingEncoderPreds[:, -1] - dataset.dataset[train_indices,-1])
+                trainingRPD = torch.std(trainingEncoderPreds[:, -1]) / torch.std(dataset.dataset[train_indices,-1])
+
+                trainingDecoderMSEP = 0 if args.noDecoder else torch.mean((trainingDecoderPreds - dataset.dataset[train_indices,:-1].to(device)) ** 2)
 
                 # Log metrics in wandb
                 wandb.log({"Encoder_Training_MSEP": trainingMSEP,
                             "Encoder_Training_R2": trainingR2,
                             "Encoder_Training_Bias": trainingBias,
-                            "Encoder_Training_RPD": trainingRPD})
+                            "Encoder_Training_RPD": trainingRPD,
+                            "Decoder_Training_MSEP": trainingDecoderMSEP})
 
                 # Compute metrics for validation set
                 if not args.fullFit:
@@ -336,22 +338,25 @@ if __name__ == "__main__":
                     validationEncoderPreds = encoder_model(dataset.dataset[val_indices,:-1].to(device))
                     validationDecoderPreds = None if args.noDecoder else decoder_model(validationEncoderPreds)
 
-                    validationMSEP = torch.mean((validationEncoderPredsV[:, -1] - batch_val_tmsoc[:, -1]) ** 2)
-                    validationR2 = r2_score(batch_val_tmsoc[:, -1].detach().cpu(), validationEncoderPredsV[:, -1].detach().cpu())
-                    validationBias = torch.mean(validationEncoderPredsV[:, -1] - batch_val_tmsoc[:, -1])
-                    validationRPD = torch.std(validationEncoderPredsV[:, -1]) / torch.std(batch_val_tmsoc[:, -1])
+                    validationMSEP = torch.mean((validationEncoderPreds[:, -1] - dataset.dataset[val_indices,-1].to(device)) ** 2)
+                    validationR2 = r2_score(dataset.dataset[val_indices,-1].cpu(), validationEncoderPreds[:, -1].detach().cpu())
+                    validationBias = torch.mean(validationEncoderPreds[:, -1] - dataset.dataset[val_indices,-1])
+                    validationRPD = torch.std(validationEncoderPreds[:, -1]) / torch.std(dataset.dataset[val_indices,-1])
+
+                    validationDecoderMSEP = 0 if args.noDecoder else torch.mean((validationDecoderPreds - dataset.dataset[val_indices,:-1].to(device)) ** 2)
 
                     wandb.log({"Encoder_Validation_MSEP": validationMSEP,
                             "Encoder_Validation_R2": validationR2,
                             "Encoder_Validation_Bias": validationBias,
-                            "Encoder_Validation_RPD": validationRPD})
+                            "Encoder_Validation_RPD": validationRPD,
+                            "Decoder_Validation_MSEP": validationDecoderMSEP})
                 
                 # Log decoder model parameters in wandb
                 if not args.noDecoder and not args.decoderModel :
                     wandb.log({"rrSOC": decoder_model.rrsoc.detach().item()})
 
                     # Log fsoc graph in wandb
-                    tfsoc = decoder_model.fsoc.detach().item()
+                    tfsoc = decoder_model.fsoc.detach()
                     fsocTableDat = [[x, y] for (x, y) in zip(XF,tfsoc)]
                     fsocTable = wandb.Table(data=fsocTableDat, columns=["Wavelength", "SOC Reflectance"])
                     wandb.log(
@@ -363,20 +368,20 @@ if __name__ == "__main__":
                     )
 
                 # Save the model if it is the best so far
-                if avg_encoder_lossV < best_encoder_lossV and not args.fullFit and epoch < args.epochs - 1:
+                if not args.fullFit and avg_encoder_lossV < best_encoder_lossV and epoch < args.epochs - 1:
                     
                     best_encoder_lossV = avg_encoder_lossV
 
-                    torch.save(encoder_model.state_dict(), f"models/{wandb.name}_encoder_minValMSEP.pt")
+                    torch.save(encoder_model.state_dict(), f"models/{runName}_encoder_minValMSEP.pt")
 
                     if not args.noDecoder:
-                        torch.save(decoder_model.state_dict(), f"models/{wandb.name}_decoder_minValMSEP.pt")
+                        torch.save(decoder_model.state_dict(), f"models/{runName}_decoder_minValMSEP.pt")
 
         
-    torch.save(encoder_model.state_dict(), f"models/{wandb.name}_encoder_final.pt")
+    torch.save(encoder_model.state_dict(), f"models/{runName}_encoder_final.pt")
 
     if not args.noDecoder:
-        torch.save(decoder_model.state_dict(), f"models/{wandb.name}_decoder_final.pt")
+        torch.save(decoder_model.state_dict(), f"models/{runName}_decoder_final.pt")
 
 
     """ ############################################################################################
@@ -384,11 +389,11 @@ if __name__ == "__main__":
     """
     if not args.fullFit :
         # # Load the best encoder model
-        # encoder_model.load_state_dict(torch.load(f"models/{wandb.name}_encoder_minValMSEP.pt"))
+        # encoder_model.load_state_dict(torch.load(f"models/{runName}_encoder_minValMSEP.pt"))
 
         # # Load the best decoder model
         # if not args.noDecoder:
-        #     decoder_model.load_state_dict(torch.load(f"models/{wandb.name}_decoder_minValMSEP.pt"))
+        #     decoder_model.load_state_dict(torch.load(f"models/{runName}_decoder_minValMSEP.pt"))
 
         # Set up optimizer
         combined_optimizer = optim.Adam(list(encoder_model.parameters()) + list([] if args.noDecoder else decoder_model.parameters()), lr=args.lr, betas=(args.b1, args.b2))
@@ -406,7 +411,7 @@ if __name__ == "__main__":
             # Load bootstrap dataset
             bootstrap_indices = indices_file[f'{args.crossValidationRegion}_bootstrap_{args.bootstrapIndex}'][:]
             bootstrap_dataset = torch.utils.data.Subset(dataset, bootstrap_indices)
-            finetune_data_loader  = data.DataLoader(bootstrap_dataset, batch_size=len(bootstrap_dataset), shuffle=True, num_workers=4, drop_last=True)
+            finetune_data_loader  = data.DataLoader(bootstrap_dataset, batch_size=len(bootstrap_dataset), shuffle=True, num_workers=0, drop_last=True)
 
             # Batching and training
             for batch_data in finetune_data_loader:
@@ -421,7 +426,7 @@ if __name__ == "__main__":
                 decoderPreds = None if args.noDecoder else decoder_model(encoderPreds)
 
                 # Compute encoder loss: sqerr from true Msoc values for the batch
-                encoder_loss = torch.mean((encoderPreds[:, -1] - batch_tmsoc[:, -1]) ** 2)
+                encoder_loss = torch.mean((encoderPreds[:, -1] - batch_tmsoc[:]) ** 2)
 
                 # Add decoder loss: sqerr from true RaCA spectra for the batch
                 decoder_loss = 0 if args.noDecoder else torch.mean((decoderPreds - batch_tIs) ** 2)
@@ -440,7 +445,7 @@ if __name__ == "__main__":
 
                 # Accumulate batch losses
                 total_encoder_loss += encoder_loss.item()
-                total_decoder_loss += decoder_loss.item()
+                total_decoder_loss += decoder_loss if args.noDecoder else decoder_loss.item()
 
             # Calculate the average loss for this epoch
             avg_encoder_loss = total_encoder_loss / len(finetune_data_loader)
@@ -468,11 +473,11 @@ if __name__ == "__main__":
                     encoderPredsV = encoder_model(batch_val_tIs)
 
                     decoderPredsV = None if args.noDecoder else decoder_model(encoderPredsV)
-                    encoder_lossV = torch.mean((encoderPredsV[:, -1] - batch_val_tmsoc[:, -1]) ** 2)
+                    encoder_lossV = torch.mean((encoderPredsV[:, -1] - batch_val_tmsoc[:]) ** 2)
                     decoder_lossV = 0 if args.noDecoder else torch.mean((decoderPredsV - batch_val_tIs) ** 2)
 
                     total_encoder_lossV += encoder_lossV.item()
-                    total_decoder_lossV += decoder_lossV.item()
+                    total_decoder_lossV += decoder_lossV if args.noDecoder else decoder_lossV.item()
 
                 avg_encoder_lossV = total_encoder_lossV / len(validation_data_loader)
                 avg_decoder_lossV = total_decoder_lossV / len(validation_data_loader)
@@ -498,11 +503,14 @@ if __name__ == "__main__":
                     finetuneBias = torch.mean(finetuneEncoderPreds[:, -1] - dataset.dataset[bootstrap_indices,-1])
                     finetuneRPD = torch.std(finetuneEncoderPreds[:, -1]) / torch.std(dataset.dataset[bootstrap_indices,-1])
 
+                    finetuneDecoderMSEP = 0 if args.noDecoder else torch.mean((finetuneDecoderPreds - dataset.dataset[bootstrap_indices,:-1].to(device)) ** 2)
+
                     # Log metrics in wandb
                     wandb.log({"Encoder_Finetune_MSEP": finetuneMSEP,
                                 "Encoder_Finetune_R2": finetuneR2,
                                 "Encoder_Finetune_Bias": finetuneBias,
-                                "Encoder_Finetune_RPD": finetuneRPD})
+                                "Encoder_Finetune_RPD": finetuneRPD,
+                                "Decoder_Finetune_MSEP": finetuneDecoderMSEP})
 
                     # Get preds on full val set
                     validationEncoderPreds = encoder_model(dataset.dataset[val_indices,:-1].to(device))
@@ -513,17 +521,20 @@ if __name__ == "__main__":
                     validationBias = torch.mean(validationEncoderPreds[:, -1] - dataset.dataset[val_indices,-1])
                     validationRPD = torch.std(validationEncoderPreds[:, -1]) / torch.std(dataset.dataset[val_indices,-1])
 
+                    validationDecoderMSEP = 0 if args.noDecoder else torch.mean((validationDecoderPreds - dataset.dataset[val_indices,:-1].to(device)) ** 2)
+
                     wandb.log({"Encoder_FinetuneValidation_MSEP": validationMSEP,
                             "Encoder_FinetuneValidation_R2": validationR2,
                             "Encoder_FinetuneValidation_Bias": validationBias,
-                            "Encoder_FinetuneValidation_RPD": validationRPD})
+                            "Encoder_FinetuneValidation_RPD": validationRPD,
+                            "Decoder_FinetuneValidation_MSEP": validationDecoderMSEP})
                     
                     # Log decoder model parameters in wandb
                     if not args.noDecoder and not args.decoderModel :
                         wandb.log({"rrSOC": decoder_model.rrsoc.detach().item()})
 
                         # Log fsoc graph in wandb
-                        tfsoc = decoder_model.fsoc.detach().item()
+                        tfsoc = decoder_model.fsoc.detach()
                         fsocTableDat = [[x, y] for (x, y) in zip(XF,tfsoc)]
                         fsocTable = wandb.Table(data=fsocTableDat, columns=["Wavelength", "SOC Reflectance"])
                         wandb.log(
@@ -534,10 +545,10 @@ if __name__ == "__main__":
                             }
                         )
 
-        torch.save(encoder_model.state_dict(), f"models/{wandb.name}_encoder_finetuned.pt")
+        torch.save(encoder_model.state_dict(), f"models/{runName}_encoder_finetuned.pt")
 
         if not args.noDecoder:
-            torch.save(decoder_model.state_dict(), f"models/{wandb.name}_decoder_finetuned.pt")    
+            torch.save(decoder_model.state_dict(), f"models/{runName}_decoder_finetuned.pt")    
 
 
     """ ############################################################################################

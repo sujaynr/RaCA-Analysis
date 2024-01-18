@@ -223,13 +223,59 @@ class LinearMixingEncoder(nn.Module):
         )
         
         # Softmax to ensure abundances add up to 1
-        self.smax = nn.Softmax() 
+        self.smax = nn.Softmax(dim=1)
         
     def forward(self, y):
         # pdb.set_trace()
         y_mlp = self.mlp(y);
         ms = self.smax(y_mlp);
         return ms
+
+""" ############################################################################################
+    
+"""
+class ANNDecoder(nn.Module):
+    def __init__(self, M, K, hidden_size):
+        super().__init__()
+        
+        self.mlp = nn.Sequential(
+            nn.BatchNorm1d(K),
+            nn.Linear(K, hidden_size),
+            nn.BatchNorm1d(hidden_size),
+            nn.ReLU(),
+            
+            # Collection of hidden layers
+            nn.Linear(hidden_size, hidden_size),
+            nn.BatchNorm1d(hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.BatchNorm1d(hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.BatchNorm1d(hidden_size),
+            nn.ReLU(),
+            
+            # Convert to vector of mass abundances.
+            nn.Linear(hidden_size, M), 
+            
+            # No subsequent BatchNorm on last layer.
+            
+            # Use leaky ReLU: has gradient !=0 at large negative values
+            # so that reflectances close to 0 or 1 (large pos. or neg. values at this layer)
+            # sit in a region of nonvanishing gradient
+            nn.LeakyReLU()    
+        )
+        
+        # Sigmoid to ensure reflectances are clamped between 0 and 1
+        self.sig = nn.Sigmoid()
+    
+    def computeLagrangeLossFactor(self) :
+        return 1.0
+        
+    def forward(self, y):
+        y_mlp = self.mlp(y);
+        Is = self.sig(y_mlp);
+        return Is
 
 
 """ ############################################################################################
@@ -240,19 +286,16 @@ class LinearMixingDecoder(nn.Module):
         super().__init__()
         
         # fixed quantities
-        self.rhorad = rhorad
-        self.Fs = seedFs
+        self.rhorad = rhorad[:-1]
+        self.Fs = seedFs[:-1,:]
         
         # model parameters
         self.fsoc   = nn.Parameter(seedFs[-1,:])
         self.rrsoc  = nn.Parameter(rhorad[-1])
         
     def forward(self, Ms):
-        #rrFull = torch.cat((self.rhorad,self.rrsoc.unsqueeze(0)))
-        rrFull = rhorad
-        rrFull[-1] = self.rrsoc
-        Ffull = self.Fs
-        Ffull[-1,:] = self.fsoc
+        rrFull = torch.cat((self.rhorad,self.rrsoc.unsqueeze(0)))
+        Ffull = torch.cat((self.Fs,self.fsoc.unsqueeze(0)))
 
         Ihat   = torch.matmul(torchA(Ms,rrFull).float(),Ffull.float())
         

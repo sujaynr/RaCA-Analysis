@@ -6,14 +6,17 @@
 #########################################################################################
 
 # Loading modules
-conda activate base
+#conda activate base
+
+export WANDB_MODE=offline
 
 # Set global variables
-export nEpochs=150000
+export nEpochs=3
 export batchSize=75
+export nFineTuneEpochs=5
 export bootstrapIndex=1
-export spectraSOCLocation="data_utils/ICLRDataset_RaCASpectraAndSOC.h5"
-export splitIndicesLocation="data_utils/ICLRDataset_splitIndices.h5"
+export spectraSOCLocation="data_utils/ICLRDataset_RaCASpectraAndSOC_v2.h5"
+export splitIndicesLocation="data_utils/ICLRDataset_splitIndices_v2.h5"
 export endmemberSpectraLocation="data_utils/ICLRDataset_USGSEndmemberSpectra.h5"
 export basename=$1
 
@@ -29,10 +32,13 @@ do
         continue
     fi
 
+    echo "Running region $regionNumber"
+
     #########################################################################################
     # Submit jobs for end to end prediction with no decoder
     for modelType in "s" "c1" "r"
     do
+        echo "\t\t - Running model $modelType with no decoder"
         python updatedTrain.py --encoderModel $modelType \
                                --noDecoder \
                                --crossValidationRegion $regionNumber \
@@ -41,13 +47,17 @@ do
                                --batch $batchSize \
                                --spectraSOCLocation $spectraSOCLocation \
                                --splitIndicesLocation $splitIndicesLocation \
-                               --endmemberSpectraLocation $endmemberSpectraLocation
+                               --endmemberSpectraLocation $endmemberSpectraLocation \
+                               --logName $basename \
+                               --finetuneEpochs $nFineTuneEpochs
+
     done
 
     #########################################################################################
     # Submit jobs for end to end prediction with decoder and physical modeling
     for modelType in "s" "c1" "r"
     do
+        echo "\t\t - Running model $modelType with normal settings"
         python updatedTrain.py --encoderModel $modelType \
                                --crossValidationRegion $regionNumber \
                                --bootstrapIndex $bootstrapIndex \
@@ -55,13 +65,16 @@ do
                                --batch $batchSize \
                                --spectraSOCLocation $spectraSOCLocation \
                                --splitIndicesLocation $splitIndicesLocation \
-                               --endmemberSpectraLocation $endmemberSpectraLocation
+                               --endmemberSpectraLocation $endmemberSpectraLocation \
+                               --logName $basename \
+                               --finetuneEpochs $nFineTuneEpochs
     done
 
     #########################################################################################
     # Submit jobs for end to end prediction with decoder and no physical modeling
     for modelType in "s" "c1" "r"
     do
+        echo "\t\t - Running model $modelType with no rhorads"
         python updatedTrain.py --encoderModel $modelType \
                                --disableRhorads \
                                --crossValidationRegion $regionNumber \
@@ -70,13 +83,16 @@ do
                                --batch $batchSize \
                                --spectraSOCLocation $spectraSOCLocation \
                                --splitIndicesLocation $splitIndicesLocation \
-                               --endmemberSpectraLocation $endmemberSpectraLocation
+                               --endmemberSpectraLocation $endmemberSpectraLocation \
+                               --logName $basename \
+                               --finetuneEpochs $nFineTuneEpochs
     done
 
     #########################################################################################   
     # Submit jobs for end to end encoder and ANN decoder
-    for modelType in "s" "c1" "r"
+    for modelType in "s" # "c1" "r"
     do
+        echo "\t\t - Running model $modelType with ANN decoder"
         python updatedTrain.py --encoderModel $modelType \
                                --decoderModel \
                                --crossValidationRegion $regionNumber \
@@ -85,7 +101,9 @@ do
                                --batch $batchSize \
                                --spectraSOCLocation $spectraSOCLocation \
                                --splitIndicesLocation $splitIndicesLocation \
-                               --endmemberSpectraLocation $endmemberSpectraLocation
+                               --endmemberSpectraLocation $endmemberSpectraLocation \
+                               --logName $basename \
+                               --finetuneEpochs $nFineTuneEpochs
     done
 done
 
@@ -93,11 +111,13 @@ done
 # Perform full analysis with no validation set to find complete SOC spectrum    
 for modelType in "s" "c1" "r"
 do
+    echo "\t\t - Running full fit for model $modelType"
     python updatedTrain.py --encoderModel $modelType \
                             --fullFit \
                             --epochs $nEpochs \
                             --batch $batchSize \
                             --spectraSOCLocation $spectraSOCLocation \
                             --splitIndicesLocation $splitIndicesLocation \
-                            --endmemberSpectraLocation $endmemberSpectraLocation
+                            --endmemberSpectraLocation $endmemberSpectraLocation \
+                            --logName $basename
 done
