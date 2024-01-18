@@ -9,15 +9,16 @@
 #conda activate base
 
 export WANDB_MODE=offline
+export currWorkingDir=$(pwd)
 
 # Set global variables
 export nEpochs=3
 export batchSize=75
 export nFineTuneEpochs=5
 export bootstrapIndex=1
-export spectraSOCLocation="data_utils/ICLRDataset_RaCASpectraAndSOC_v2.h5"
-export splitIndicesLocation="data_utils/ICLRDataset_splitIndices_v2.h5"
-export endmemberSpectraLocation="data_utils/ICLRDataset_USGSEndmemberSpectra.h5"
+export spectraSOCLocation="${currWorkingDir}/data_utils/ICLRDataset_RaCASpectraAndSOC_v2.h5"
+export splitIndicesLocation="${currWorkingDir}/data_utils/ICLRDataset_SplitIndices_v2.h5"
+export endmemberSpectraLocation="${currWorkingDir}/data_utils/ICLRDataset_USGSEndmemberSpectra.h5"
 export basename=$1
 
 #########################################################################################
