@@ -78,7 +78,7 @@ if __name__ == "__main__":
     parser.add_argument("--splitIndicesLocation",       type=str, default="data_utils/ICLRDataset_splitIndices.h5", help="File name for soil spectrum index, split by region number.") 
     parser.add_argument("--endmemberSpectraLocation",   type=str, default="data_utils/ICLRDataset_USGSEndmemberSpectra.h5", help="File name for pure endmember spectra and rhorads.") 
 
-    parser.add_argument("--lr",  type=float, default=0.000001, help="Learning rate for Adam optimizer.")
+    parser.add_argument("--lr",  type=float, default=0.00001, help="Learning rate for Adam optimizer.")
     parser.add_argument("--b1",  type=float, default=0.99,    help="Beta1 for Adam optimizer.")
     parser.add_argument("--b2",  type=float, default=0.999,  help="Beta2 for Adam optimizer.")
 
@@ -148,16 +148,30 @@ if __name__ == "__main__":
     training_data_loader    = data.DataLoader(training_dataset,   batch_size=args.batch, shuffle=True, num_workers=0, drop_last=True)
     validation_data_loader  = data.DataLoader(validation_dataset, batch_size=args.batch, shuffle=True, num_workers=0, drop_last=True) if not args.fullFit else None
 
+    # Load bootstrap dataset
+    bootstrap_indices = None if args.fullFit else indices_file[f'{args.crossValidationRegion}_bootstrap_{args.bootstrapIndex}'][:]
+    bootstrap_dataset = None if args.fullFit else torch.utils.data.Subset(dataset, bootstrap_indices)
+    finetune_data_loader  = None if args.fullFit else data.DataLoader(bootstrap_dataset, batch_size=len(bootstrap_dataset), shuffle=True, num_workers=0, drop_last=True)
+
     ###
     # Load the endmember spectra and rhorads:
     endmember_file  = h5py.File(args.endmemberSpectraLocation, 'r')
-    seedFs          = torch.tensor(endmember_file['Fs'][:])
-    seedrrs         = torch.tensor(endmember_file['rhorads'][:])
+    seedFs          = torch.tensor(endmember_file['Fs'][:]).to(device)
+    seedrrs         = torch.tensor(endmember_file['rhorads'][:]).to(device)
 
     # If we disable rhorads, set them all to 1 so they have no effect
     if args.disableRhorads : 
-        seedrrs = torch.ones(seedrrs.shape)
+        seedrrs = torch.ones(seedrrs.shape).to(device)
 
+    # Move relevant datasets to the GPU
+    trainingGTmsoc = dataset.dataset[train_indices,-1].to(device)
+    trainingGTspec = dataset.dataset[train_indices,:-1].to(device)
+
+    validationGTmsoc = None if args.fullFit else dataset.dataset[val_indices,-1].to(device)
+    validationGTspec = None if args.fullFit else dataset.dataset[val_indices,:-1].to(device)
+
+    finetuneGTmsoc = None if args.fullFit else dataset.dataset[bootstrap_indices,-1].to(device)
+    finetuneGTspec = None if args.fullFit else dataset.dataset[bootstrap_indices,:-1].to(device)
 
     """ ############################################################################################
         Prepare models
@@ -242,7 +256,7 @@ if __name__ == "__main__":
             decoderPreds = None if args.noDecoder else decoder_model(encoderPreds)
 
             # Compute encoder loss: sqerr from true Msoc values for the batch
-            encoder_loss = 1000 * torch.mean((encoderPreds[:, -1] - batch_tmsoc[:]) ** 2)
+            encoder_loss = torch.mean((encoderPreds[:, -1] - batch_tmsoc[:]) ** 2)
 
             # Add decoder loss: sqerr from true RaCA spectra for the batch
             decoder_loss = 0.0 if args.noDecoder else torch.mean((decoderPreds - batch_tIs) ** 2)
@@ -252,7 +266,7 @@ if __name__ == "__main__":
             if llf > maxllf : maxllf = llf
 
             # Calculate the combined loss
-            loss = (encoder_loss + decoder_loss) * llf
+            loss = (encoder_loss/(0.0041**2) + decoder_loss/(0.01**2)) * llf
 
             # Backpropagate the gradients for both models
             combined_optimizer.zero_grad()
@@ -269,6 +283,7 @@ if __name__ == "__main__":
 
         wandb.log({"Encoder_Training_Loss": avg_encoder_loss, 
                    "Decoder_Training_Loss": avg_decoder_loss, 
+                   "Total_Training_Loss": avg_encoder_loss/(0.0041**2) + avg_decoder_loss/(0.01**2),
                    "Max_LagrangeLossFactor": maxllf})
 
         """ ############################################################################################
@@ -289,7 +304,7 @@ if __name__ == "__main__":
                     encoderPredsV = encoder_model(batch_val_tIs)
                     decoderPredsV = None if args.noDecoder else decoder_model(encoderPredsV)
                     
-                    encoder_lossV = 1000 * torch.mean((encoderPredsV[:, -1] - batch_val_tmsoc[:]) ** 2)
+                    encoder_lossV = torch.mean((encoderPredsV[:, -1] - batch_val_tmsoc[:]) ** 2)
                     decoder_lossV = 0 if args.noDecoder else torch.mean((decoderPredsV - batch_val_tIs) ** 2)
 
                     total_encoder_lossV += encoder_lossV.item()
@@ -299,59 +314,54 @@ if __name__ == "__main__":
                 avg_decoder_lossV = total_decoder_lossV / len(validation_data_loader)
 
                 wandb.log({"Encoder_Validation_Loss": avg_encoder_lossV, 
-                           "Decoder_Validation_Loss": avg_decoder_lossV})
+                           "Decoder_Validation_Loss": avg_decoder_lossV,
+                           "Total_Validation_Loss": avg_encoder_lossV/(0.0041**2) + avg_decoder_lossV/(0.01**2)})
         
-            if epoch % 4 == 0:
+            if epoch % 100 == 0:
                 # Log in wandb the following on the training and validation sets:
-                #   - Mean Square Error Percentage (MSEP) for encoder model
+                #   - Mean Square Error of Performance (MSEP) for encoder model
                 #   - MSEP for decoder model
                 #   - R^2 Score for SOC predictions
                 #   - Bias for SOC predictions
                 #   - Ratio of performance to deviation (RPD) for SOC predictions
                 
                 # Get preds on full training set
-                trainingGTmsoc = dataset.dataset[train_indices,-1].to(device)
-                trainingGTspec = dataset.dataset[train_indices,:-1].to(device)
-
                 trainingEncoderPreds = encoder_model(trainingGTspec)
                 trainingDecoderPreds = None if args.noDecoder else decoder_model(trainingEncoderPreds)
 
                 # Compute metrics for training set
-                trainingMSEP = torch.mean((trainingEncoderPreds[:, -1] - trainingGTmsoc) ** 2)
+                trainingRMSEP = torch.sqrt(torch.mean((trainingEncoderPreds[:, -1] - trainingGTmsoc) ** 2))
                 trainingR2 = r2_score(trainingGTmsoc, trainingEncoderPreds[:, -1])
                 trainingBias = torch.mean(trainingEncoderPreds[:, -1] - trainingGTmsoc)
                 trainingRPD = torch.std(trainingEncoderPreds[:, -1]) / torch.std(trainingGTmsoc)
 
-                trainingDecoderMSEP = 0 if args.noDecoder else torch.mean((trainingDecoderPreds - trainingGTspec) ** 2)
+                trainingDecoderRMSEP = 0 if args.noDecoder else torch.sqrt(torch.mean((trainingDecoderPreds - trainingGTspec) ** 2))
 
                 # Log metrics in wandb
-                wandb.log({"Encoder_Training_MSEP": trainingMSEP,
+                wandb.log({"Encoder_Training_RMSEP": trainingRMSEP,
                             "Encoder_Training_R2": trainingR2,
                             "Encoder_Training_Bias": trainingBias,
                             "Encoder_Training_RPD": trainingRPD,
-                            "Decoder_Training_MSEP": trainingDecoderMSEP})
+                            "Decoder_Training_RMSEP": trainingDecoderRMSEP})
 
                 # Compute metrics for validation set
                 if not args.fullFit:
                     # Get preds on full val set
-                    validationGTmsoc = dataset.dataset[val_indices,-1].to(device)
-                    validationGTspec = dataset.dataset[val_indices,:-1].to(device)
-
                     validationEncoderPreds = encoder_model(validationGTspec)
                     validationDecoderPreds = None if args.noDecoder else decoder_model(validationEncoderPreds)
 
-                    validationMSEP = torch.mean((validationEncoderPreds[:, -1] - validationGTmsoc) ** 2)
+                    validationRMSEP = torch.sqrt(torch.mean((validationEncoderPreds[:, -1] - validationGTmsoc) ** 2))
                     validationR2 = r2_score(validationGTmsoc, validationEncoderPreds[:, -1])
                     validationBias = torch.mean(validationEncoderPreds[:, -1] - validationGTmsoc)
                     validationRPD = torch.std(validationEncoderPreds[:, -1]) / torch.std(validationGTmsoc)
 
-                    validationDecoderMSEP = 0 if args.noDecoder else torch.mean((validationDecoderPreds - validationGTspec) ** 2)
+                    validationDecoderRMSEP = 0 if args.noDecoder else torch.sqrt(torch.mean((validationDecoderPreds - validationGTspec) ** 2))
 
-                    wandb.log({"Encoder_Validation_MSEP": validationMSEP,
+                    wandb.log({"Encoder_Validation_RMSEP": validationRMSEP,
                             "Encoder_Validation_R2": validationR2,
                             "Encoder_Validation_Bias": validationBias,
                             "Encoder_Validation_RPD": validationRPD,
-                            "Decoder_Validation_MSEP": validationDecoderMSEP})
+                            "Decoder_Validation_RMSEP": validationDecoderRMSEP})
                 
                 # Log decoder model parameters in wandb
                 if not args.noDecoder and not args.decoderModel :
@@ -370,7 +380,7 @@ if __name__ == "__main__":
                     )
 
                 # Save the model if it is the best so far
-                if not args.fullFit and avg_encoder_lossV < best_encoder_lossV and epoch < args.epochs - 1:
+                if epoch % 1000 == 0 and not args.fullFit and avg_encoder_lossV < best_encoder_lossV and epoch < args.epochs - 1:
                     
                     best_encoder_lossV = avg_encoder_lossV
 
@@ -410,11 +420,6 @@ if __name__ == "__main__":
             total_decoder_loss = 0.0
             maxllf = 0.0
 
-            # Load bootstrap dataset
-            bootstrap_indices = indices_file[f'{args.crossValidationRegion}_bootstrap_{args.bootstrapIndex}'][:]
-            bootstrap_dataset = torch.utils.data.Subset(dataset, bootstrap_indices)
-            finetune_data_loader  = data.DataLoader(bootstrap_dataset, batch_size=len(bootstrap_dataset), shuffle=True, num_workers=0, drop_last=True)
-
             # Batching and training
             for batch_data in finetune_data_loader:
                 # Extract batch data
@@ -438,7 +443,7 @@ if __name__ == "__main__":
                 if llf > maxllf : maxllf = llf
 
                 # Calculate the combined loss
-                loss = (encoder_loss + decoder_loss) * llf
+                loss = (encoder_loss/(0.0041**2) + decoder_loss/(0.01**2)) * llf
 
                 # Backpropagate the gradients for both models
                 combined_optimizer.zero_grad()
@@ -455,6 +460,7 @@ if __name__ == "__main__":
 
             wandb.log({"Encoder_Finetune_Loss": avg_encoder_loss,
                        "Decoder_Finetune_Loss": avg_decoder_loss,
+                       "Total_Finetune_Loss": avg_encoder_loss/(0.0041**2) + avg_decoder_loss/(0.01**2),
                        "Max_Finetune_LagrangeLossFactor": maxllf})
     
             """ ############################################################################################
@@ -485,61 +491,56 @@ if __name__ == "__main__":
                 avg_decoder_lossV = total_decoder_lossV / len(validation_data_loader)
 
                 wandb.log({"Encoder_FinetuneValidation_Loss": avg_encoder_lossV, 
-                          "Decoder_FinetuneValidation_Loss": avg_decoder_lossV})
+                          "Decoder_FinetuneValidation_Loss": avg_decoder_lossV,
+                          "Total_FinetuneValidation_Loss": avg_encoder_lossV/(0.0041**2) + avg_decoder_lossV/(0.01**2)})
             
-                if epoch % 4 == 0:
+                if epoch % 100 == 0:
                     # Log in wandb the following on the training and validation sets:
-                    #   - Mean Square Error Percentage (MSEP) for encoder model
-                    #   - MSEP for decoder model
+                    #   - Mean Square Error of Performance (RMSEP) for encoder model
+                    #   - RMSEP for decoder model
                     #   - R^2 Score for SOC predictions
                     #   - Bias for SOC predictions
                     #   - Ratio of performance to deviation (RPD) for SOC predictions
                     
                     # Get preds on full training set
-                    finetuneGTmsoc = dataset.dataset[bootstrap_indices,-1].to(device)
-                    finetuneGTspec = dataset.dataset[bootstrap_indices,:-1].to(device)
-
                     finetuneEncoderPreds = encoder_model(finetuneGTspec)
                     finetuneDecoderPreds = None if args.noDecoder else decoder_model(finetuneEncoderPreds)
 
                     # Compute metrics for training set
-                    finetuneMSEP = torch.mean((finetuneEncoderPreds[:, -1] - finetuneGTmsoc) ** 2)
+                    finetuneRMSEP = torch.sqrt(torch.mean((finetuneEncoderPreds[:, -1] - finetuneGTmsoc) ** 2))
                     finetuneR2 = r2_score(finetuneGTmsoc, finetuneEncoderPreds[:, -1])
                     finetuneBias = torch.mean(finetuneEncoderPreds[:, -1] - finetuneGTmsoc)
                     finetuneRPD = torch.std(finetuneEncoderPreds[:, -1]) / torch.std(finetuneGTmsoc)
 
-                    finetuneDecoderMSEP = 0 if args.noDecoder else torch.mean((finetuneDecoderPreds - validationGTspec) ** 2)
+                    finetuneDecoderRMSEP = 0 if args.noDecoder else torch.sqrt(torch.mean((finetuneDecoderPreds - finetuneGTspec) ** 2))
 
                     # Log metrics in wandb
-                    wandb.log({"Encoder_Finetune_MSEP": finetuneMSEP,
+                    wandb.log({"Encoder_Finetune_RMSEP": finetuneRMSEP,
                                 "Encoder_Finetune_R2": finetuneR2,
                                 "Encoder_Finetune_Bias": finetuneBias,
                                 "Encoder_Finetune_RPD": finetuneRPD,
-                                "Decoder_Finetune_MSEP": finetuneDecoderMSEP})
+                                "Decoder_Finetune_RMSEP": finetuneDecoderRMSEP})
 
                     # Get preds on full val set
-                    validationGTmsoc = dataset.dataset[val_indices,-1].to(device)
-                    validationGTspec = dataset.dataset[val_indices,:-1].to(device)
-
                     validationEncoderPreds = encoder_model(validationGTspec)
                     validationDecoderPreds = None if args.noDecoder else decoder_model(validationEncoderPreds)
 
-                    validationMSEP = torch.mean((validationEncoderPreds[:, -1] - validationGTmsoc) ** 2)
+                    validationRMSEP = torch.sqrt(torch.mean((validationEncoderPreds[:, -1] - validationGTmsoc) ** 2))
                     validationR2 = r2_score(validationGTmsoc, validationEncoderPreds[:, -1])
                     validationBias = torch.mean(validationEncoderPreds[:, -1] - validationGTmsoc)
                     validationRPD = torch.std(validationEncoderPreds[:, -1]) / torch.std(validationGTmsoc)
 
-                    validationDecoderMSEP = 0 if args.noDecoder else torch.mean((validationDecoderPreds - validationGTspec) ** 2)
+                    validationDecoderRMSEP = 0 if args.noDecoder else torch.sqrt(torch.mean((validationDecoderPreds - validationGTspec) ** 2))
 
-                    wandb.log({"Encoder_FinetuneValidation_MSEP": validationMSEP,
+                    wandb.log({"Encoder_FinetuneValidation_RMSEP": validationRMSEP,
                             "Encoder_FinetuneValidation_R2": validationR2,
                             "Encoder_FinetuneValidation_Bias": validationBias,
                             "Encoder_FinetuneValidation_RPD": validationRPD,
-                            "Decoder_FinetuneValidation_MSEP": validationDecoderMSEP})
+                            "Decoder_FinetuneValidation_RMSEP": validationDecoderRMSEP})
                     
                     # Log decoder model parameters in wandb
                     if not args.noDecoder and not args.decoderModel :
-                        wandb.log({"rrSOC": decoder_model.rrsoc.detach().item()})
+                        wandb.log({"rrSOC_finetuned": decoder_model.rrsoc.detach().item()})
 
                         # Log fsoc graph in wandb
                         tfsoc = decoder_model.fsoc.detach()
@@ -547,7 +548,7 @@ if __name__ == "__main__":
                         fsocTable = wandb.Table(data=fsocTableDat, columns=["Wavelength", "SOC Reflectance"])
                         wandb.log(
                             {
-                                "Fsoc": wandb.plot.line(
+                                "Fsoc_finetuned": wandb.plot.line(
                                     fsocTable, "Wavelength", "SOC Reflectance", title="Regressed SOC Spectrum"
                                 )
                             }
