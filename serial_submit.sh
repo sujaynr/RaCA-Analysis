@@ -8,14 +8,14 @@
 # Loading modules
 #conda activate base
 
-export WANDB_MODE=offline
+export WANDB_MODE=online
 export currWorkingDir=$(pwd)
 
 # Set global variables
-export nEpochs=3
-export batchSize=75
-export nFineTuneEpochs=5
-export bootstrapIndex=1
+export nEpochs=1000
+export batchSize=300
+export nFineTuneEpochs=100
+export bootstrapIndex=2
 export spectraSOCLocation="${currWorkingDir}/data_utils/ICLRDataset_RaCASpectraAndSOC_v2.h5"
 export splitIndicesLocation="${currWorkingDir}/data_utils/ICLRDataset_SplitIndices_v2.h5"
 export endmemberSpectraLocation="${currWorkingDir}/data_utils/ICLRDataset_USGSEndmemberSpectra.h5"
@@ -37,7 +37,7 @@ do
 
     #########################################################################################
     # Submit jobs for end to end prediction with no decoder
-    for modelType in "s" "c1" "r"
+    for modelType in "$2" # "s" "c1" "r"
     do
         echo "\t\t - Running model $modelType with no decoder"
         python updatedTrain.py --encoderModel $modelType \
@@ -51,12 +51,11 @@ do
                                --endmemberSpectraLocation $endmemberSpectraLocation \
                                --logName $basename \
                                --finetuneEpochs $nFineTuneEpochs
-
     done
 
     #########################################################################################
     # Submit jobs for end to end prediction with decoder and physical modeling
-    for modelType in "s" "c1" "r"
+    for modelType in "$2" #"s" "c1" "r"
     do
         echo "\t\t - Running model $modelType with normal settings"
         python updatedTrain.py --encoderModel $modelType \
@@ -73,7 +72,7 @@ do
 
     #########################################################################################
     # Submit jobs for end to end prediction with decoder and no physical modeling
-    for modelType in "s" "c1" "r"
+    for modelType in "$2" # "s" "c1" "r"
     do
         echo "\t\t - Running model $modelType with no rhorads"
         python updatedTrain.py --encoderModel $modelType \
@@ -91,7 +90,7 @@ do
 
     #########################################################################################   
     # Submit jobs for end to end encoder and ANN decoder
-    for modelType in "s" # "c1" "r"
+    for modelType in "$2" # "s" "c1" "r"
     do
         echo "\t\t - Running model $modelType with ANN decoder"
         python updatedTrain.py --encoderModel $modelType \
@@ -110,7 +109,7 @@ done
 
 #########################################################################################
 # Perform full analysis with no validation set to find complete SOC spectrum    
-for modelType in "s" "c1" "r"
+for modelType in "$2" # "s" "c1" "r"
 do
     echo "\t\t - Running full fit for model $modelType"
     python updatedTrain.py --encoderModel $modelType \

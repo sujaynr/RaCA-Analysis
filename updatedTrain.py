@@ -78,7 +78,7 @@ if __name__ == "__main__":
     parser.add_argument("--splitIndicesLocation",       type=str, default="data_utils/ICLRDataset_splitIndices.h5", help="File name for soil spectrum index, split by region number.") 
     parser.add_argument("--endmemberSpectraLocation",   type=str, default="data_utils/ICLRDataset_USGSEndmemberSpectra.h5", help="File name for pure endmember spectra and rhorads.") 
 
-    parser.add_argument("--lr",  type=float, default=0.00001, help="Learning rate for Adam optimizer.")
+    parser.add_argument("--lr",  type=float, default=0.00005, help="Learning rate for Adam optimizer.")
     parser.add_argument("--b1",  type=float, default=0.99,    help="Beta1 for Adam optimizer.")
     parser.add_argument("--b2",  type=float, default=0.999,  help="Beta2 for Adam optimizer.")
 
@@ -173,6 +173,10 @@ if __name__ == "__main__":
     finetuneGTmsoc = None if args.fullFit else dataset.dataset[bootstrap_indices,-1].to(device)
     finetuneGTspec = None if args.fullFit else dataset.dataset[bootstrap_indices,:-1].to(device)
 
+    valb_indices = None if args.fullFit else [i for i in val_indices if i not in bootstrap_indices]
+    finetuneValGTmsoc = None if args.fullFit else dataset.dataset[valb_indices,-1].to(device)
+    finetuneValGTspec = None if args.fullFit else dataset.dataset[valb_indices,:-1].to(device)
+
     """ ############################################################################################
         Prepare models
     """
@@ -198,7 +202,7 @@ if __name__ == "__main__":
             encoder_model = LinearMixingEncoder(MSpectra, KEndmembers, 512).to(device)
         elif args.encoderModel == "c1":
             print("Using 1D Conv Model")
-            encoder_model = EncoderConv1D(MSpectra, KEndmembers, 32, 15).to(device) # (M, K, hidden_size, kernel_size)
+            encoder_model = EncoderConv1D(MSpectra, KEndmembers, 8, 10).to(device) # (M, K, hidden_size, kernel_size)
         elif args.encoderModel == "c1u":
             print("Using 1D Conv Model with Uncertainties")
             raise ValueError("Model error, please choose s (standard linear), c1 (1D conv), r (RNN), or t (Transformer)")
@@ -213,6 +217,9 @@ if __name__ == "__main__":
             raise ValueError("Model error, please choose s (standard linear), c1 (1D conv), r (RNN), or t (Transformer)")
     except ValueError as e:
         print(e)
+
+    # print number of encoder model parameters
+    print(f"Number of encoder model parameters: {sum(p.numel() for p in encoder_model.parameters() if p.requires_grad)}")
 
     # Set up decoder model and optimizer
     if args.noDecoder:
@@ -317,7 +324,7 @@ if __name__ == "__main__":
                            "Decoder_Validation_Loss": avg_decoder_lossV,
                            "Total_Validation_Loss": avg_encoder_lossV/(0.0041**2) + avg_decoder_lossV/(0.01**2)})
         
-            if epoch % 100 == 0:
+            if epoch % 100 == 0 :
                 # Log in wandb the following on the training and validation sets:
                 #   - Mean Square Error of Performance (MSEP) for encoder model
                 #   - MSEP for decoder model
@@ -522,15 +529,15 @@ if __name__ == "__main__":
                                 "Decoder_Finetune_RMSEP": finetuneDecoderRMSEP})
 
                     # Get preds on full val set
-                    validationEncoderPreds = encoder_model(validationGTspec)
+                    validationEncoderPreds = encoder_model(finetuneValGTspec)
                     validationDecoderPreds = None if args.noDecoder else decoder_model(validationEncoderPreds)
 
-                    validationRMSEP = torch.sqrt(torch.mean((validationEncoderPreds[:, -1] - validationGTmsoc) ** 2))
-                    validationR2 = r2_score(validationGTmsoc, validationEncoderPreds[:, -1])
-                    validationBias = torch.mean(validationEncoderPreds[:, -1] - validationGTmsoc)
-                    validationRPD = torch.std(validationEncoderPreds[:, -1]) / torch.std(validationGTmsoc)
+                    validationRMSEP = torch.sqrt(torch.mean((validationEncoderPreds[:, -1] - finetuneValGTmsoc) ** 2))
+                    validationR2 = r2_score(finetuneValGTmsoc, validationEncoderPreds[:, -1])
+                    validationBias = torch.mean(validationEncoderPreds[:, -1] - finetuneValGTmsoc)
+                    validationRPD = torch.std(validationEncoderPreds[:, -1]) / torch.std(finetuneValGTmsoc)
 
-                    validationDecoderRMSEP = 0 if args.noDecoder else torch.sqrt(torch.mean((validationDecoderPreds - validationGTspec) ** 2))
+                    validationDecoderRMSEP = 0 if args.noDecoder else torch.sqrt(torch.mean((validationDecoderPreds - finetuneValGTspec) ** 2))
 
                     wandb.log({"Encoder_FinetuneValidation_RMSEP": validationRMSEP,
                             "Encoder_FinetuneValidation_R2": validationR2,

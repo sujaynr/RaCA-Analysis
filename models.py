@@ -28,8 +28,7 @@ class EncoderRNN(nn.Module):
     
     def forward(self, y):
         # Initialize the hidden state of the RNN
-        device = "cuda:0"
-        h0 = torch.zeros(1, y.size(0), self.rnn.hidden_size).to(device)
+        h0 = torch.zeros(1, y.size(0), self.rnn.hidden_size)
         
         # Apply RNN layer
         y_rnn, _ = self.rnn(y.unsqueeze(2), h0)
