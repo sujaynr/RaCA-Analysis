@@ -173,9 +173,10 @@ if __name__ == "__main__":
     finetuneGTmsoc = None if args.fullFit else dataset.dataset[bootstrap_indices,-1].to(device)
     finetuneGTspec = None if args.fullFit else dataset.dataset[bootstrap_indices,:-1].to(device)
 
-    valb_indices = None if args.fullFit else [i for i in val_indices if i not in bootstrap_indices]
+    valb_indices = None if args.fullFit else val_indices #[i for i in val_indices if i not in bootstrap_indices]
     finetuneValGTmsoc = None if args.fullFit else dataset.dataset[valb_indices,-1].to(device)
     finetuneValGTspec = None if args.fullFit else dataset.dataset[valb_indices,:-1].to(device)
+
 
     """ ############################################################################################
         Prepare models
@@ -244,7 +245,7 @@ if __name__ == "__main__":
     # Initialize best validation loss
     best_encoder_lossV = torch.tensor(float("inf"))
 
-    for epoch in tqdm(range(args.epochs+1)):
+    for epoch in tqdm(range(args.epochs)):
 
         # Initialize loss variables for this epoch
         total_encoder_loss = 0.0
@@ -291,7 +292,7 @@ if __name__ == "__main__":
         wandb.log({"Encoder_Training_Loss": avg_encoder_loss, 
                    "Decoder_Training_Loss": avg_decoder_loss, 
                    "Total_Training_Loss": avg_encoder_loss/(0.0041**2) + avg_decoder_loss/(0.01**2),
-                   "Max_LagrangeLossFactor": maxllf})
+                   "Max_LagrangeLossFactor": maxllf}, step=epoch)
 
         """ ############################################################################################
             Validate models
@@ -322,9 +323,9 @@ if __name__ == "__main__":
 
                 wandb.log({"Encoder_Validation_Loss": avg_encoder_lossV, 
                            "Decoder_Validation_Loss": avg_decoder_lossV,
-                           "Total_Validation_Loss": avg_encoder_lossV/(0.0041**2) + avg_decoder_lossV/(0.01**2)})
+                           "Total_Validation_Loss": avg_encoder_lossV/(0.0041**2) + avg_decoder_lossV/(0.01**2)}, step=epoch)
         
-            if epoch % 100 == 0 :
+            if epoch % 100 == 0 or epoch == args.epochs - 1:
                 # Log in wandb the following on the training and validation sets:
                 #   - Mean Square Error of Performance (MSEP) for encoder model
                 #   - MSEP for decoder model
@@ -343,13 +344,15 @@ if __name__ == "__main__":
                 trainingRPD = torch.std(trainingEncoderPreds[:, -1]) / torch.std(trainingGTmsoc)
 
                 trainingDecoderRMSEP = 0 if args.noDecoder else torch.sqrt(torch.mean((trainingDecoderPreds - trainingGTspec) ** 2))
+                trainingDecoderMRMSE = 0 if args.noDecoder else torch.mean(torch.sqrt(torch.mean((trainingDecoderPreds - trainingGTspec) ** 2,axis=1)))
 
                 # Log metrics in wandb
                 wandb.log({"Encoder_Training_RMSEP": trainingRMSEP,
                             "Encoder_Training_R2": trainingR2,
                             "Encoder_Training_Bias": trainingBias,
                             "Encoder_Training_RPD": trainingRPD,
-                            "Decoder_Training_RMSEP": trainingDecoderRMSEP})
+                            "Decoder_Training_RMSEP": trainingDecoderRMSEP,
+                            "Decoder_Training_MRMSE": trainingDecoderMRMSE}, step=epoch)
 
                 # Compute metrics for validation set
                 if not args.fullFit:
@@ -363,38 +366,68 @@ if __name__ == "__main__":
                     validationRPD = torch.std(validationEncoderPreds[:, -1]) / torch.std(validationGTmsoc)
 
                     validationDecoderRMSEP = 0 if args.noDecoder else torch.sqrt(torch.mean((validationDecoderPreds - validationGTspec) ** 2))
+                    validationDecoderMRMSE = 0 if args.noDecoder else torch.mean(torch.sqrt(torch.mean((validationDecoderPreds - validationGTspec) ** 2,axis=1)))
 
                     wandb.log({"Encoder_Validation_RMSEP": validationRMSEP,
                             "Encoder_Validation_R2": validationR2,
                             "Encoder_Validation_Bias": validationBias,
                             "Encoder_Validation_RPD": validationRPD,
-                            "Decoder_Validation_RMSEP": validationDecoderRMSEP})
+                            "Decoder_Validation_RMSEP": validationDecoderRMSEP,
+                            "Decoder_Validation_MRMSE": validationDecoderMRMSE}, step=epoch)
                 
                 # Log decoder model parameters in wandb
-                if not args.noDecoder and not args.decoderModel :
-                    wandb.log({"rrSOC": decoder_model.rrsoc.detach().item()})
+                if not args.noDecoder :
+                    if not args.decoderModel :
+                        wandb.log({"rrSOC": decoder_model.rrsoc.detach().item()}, step=epoch)
 
-                    # Log fsoc graph in wandb
-                    tfsoc = decoder_model.fsoc.detach()
-                    fsocTableDat = [[x, y] for (x, y) in zip(XF,tfsoc)]
-                    fsocTable = wandb.Table(data=fsocTableDat, columns=["Wavelength", "SOC Reflectance"])
+                        # Log fsoc graph in wandb
+                        tfsoc = decoder_model.fsoc.detach()
+                        fsocTableDat = [[x, y] for (x, y) in zip(XF,tfsoc)]
+                        fsocTable = wandb.Table(data=fsocTableDat, columns=["Wavelength", "SOC Reflectance"])
+                        wandb.log(
+                            {
+                                "Fsoc": wandb.plot.line(
+                                    fsocTable, "Wavelength", "SOC Reflectance", title="Regressed SOC Spectrum"
+                                )
+                            }, step=epoch
+                        )
+
+                    # Log pred errors on validation set
+                    predSOCerr = (validationEncoderPreds[:, -1] - validationGTmsoc).detach()
+                    predRMSEP = torch.sqrt(torch.mean((validationDecoderPreds - validationGTspec) ** 2,axis=1))
+                    predTableDat = [[x, y] for (x, y) in zip(predSOCerr,predRMSEP)]
+                    predTable = wandb.Table(data=predTableDat, columns=["SOC prediction error", "Spectrum prediction RMSE"])
                     wandb.log(
                         {
-                            "Fsoc": wandb.plot.line(
-                                fsocTable, "Wavelength", "SOC Reflectance", title="Regressed SOC Spectrum"
+                            "EvD_Val_Pred_Error": wandb.plot.line(
+                                predTable, "SOC prediction error", "Spectrum prediction RMSE", title="Spectrum Prediction Error vs. SOC Prediction Error"
                             )
-                        }
+                        }, step=epoch
                     )
 
-                # Save the model if it is the best so far
-                if epoch % 1000 == 0 and not args.fullFit and avg_encoder_lossV < best_encoder_lossV and epoch < args.epochs - 1:
-                    
-                    best_encoder_lossV = avg_encoder_lossV
+                    # Log pred errors on validation set as function of wavelength
+                    vpredRMSEP = torch.sqrt(torch.mean((validationDecoderPreds - validationGTspec) ** 2,axis=0))
+                    vpredTableDat = [[x, y] for (x, y) in zip(XF,vpredRMSEP)]
+                    vpredTable = wandb.Table(data=vpredTableDat, columns=["Wavelength [nm]", "Spectrum prediction RMSE"])
+                    wandb.log(
+                        {
+                            "D_Val_Pred_Error_Wavelength": wandb.plot.line(
+                                vpredTable, "Wavelength [nm]", "Spectrum prediction RMSE", title="Spectrum Prediction Error vs. Wavelength"
+                            )
+                        }, step=epoch
+                    )
 
-                    torch.save(encoder_model.state_dict(), f"models/{runName}_encoder_minValMSEP.pt")
-
-                    if not args.noDecoder:
-                        torch.save(decoder_model.state_dict(), f"models/{runName}_decoder_minValMSEP.pt")
+                    # Log pred errors on training set as function of wavelength
+                    tpredRMSEP = torch.sqrt(torch.mean((trainingDecoderPreds - trainingGTspec) ** 2,axis=0))
+                    tpredTableDat = [[x, y] for (x, y) in zip(XF,tpredRMSEP)]
+                    tpredTable = wandb.Table(data=tpredTableDat, columns=["Wavelength [nm]", "Spectrum prediction RMSE"])
+                    wandb.log(
+                        {
+                            "D_Train_Pred_Error_Wavelength": wandb.plot.line(
+                                tpredTable, "Wavelength [nm]", "Spectrum prediction RMSE", title="Spectrum Prediction Error vs. Wavelength"
+                            )
+                        }, step=epoch
+                    )
 
         
     torch.save(encoder_model.state_dict(), f"models/{runName}_encoder_final.pt")
@@ -407,20 +440,13 @@ if __name__ == "__main__":
         Fine-tune models (TODO)
     """
     if not args.fullFit :
-        # # Load the best encoder model
-        # encoder_model.load_state_dict(torch.load(f"models/{runName}_encoder_minValMSEP.pt"))
-
-        # # Load the best decoder model
-        # if not args.noDecoder:
-        #     decoder_model.load_state_dict(torch.load(f"models/{runName}_decoder_minValMSEP.pt"))
-
         # Set up optimizer
         combined_optimizer = optim.Adam(list(encoder_model.parameters()) + list([] if args.noDecoder else decoder_model.parameters()), lr=args.lr, betas=(args.b1, args.b2))
 
         # Initialize best validation loss
         best_encoder_lossV = torch.tensor(float("inf"))
 
-        for epoch in tqdm(range(args.finetuneEpochs+1)):
+        for epoch in tqdm(range(args.finetuneEpochs)):
 
             # Initialize loss variables for this epoch
             total_encoder_loss = 0.0
@@ -468,7 +494,7 @@ if __name__ == "__main__":
             wandb.log({"Encoder_Finetune_Loss": avg_encoder_loss,
                        "Decoder_Finetune_Loss": avg_decoder_loss,
                        "Total_Finetune_Loss": avg_encoder_loss/(0.0041**2) + avg_decoder_loss/(0.01**2),
-                       "Max_Finetune_LagrangeLossFactor": maxllf})
+                       "Max_Finetune_LagrangeLossFactor": maxllf}, step=args.epochs+epoch)
     
             """ ############################################################################################
                 Validate fine-tuned model
@@ -499,9 +525,9 @@ if __name__ == "__main__":
 
                 wandb.log({"Encoder_FinetuneValidation_Loss": avg_encoder_lossV, 
                           "Decoder_FinetuneValidation_Loss": avg_decoder_lossV,
-                          "Total_FinetuneValidation_Loss": avg_encoder_lossV/(0.0041**2) + avg_decoder_lossV/(0.01**2)})
+                          "Total_FinetuneValidation_Loss": avg_encoder_lossV/(0.0041**2) + avg_decoder_lossV/(0.01**2)}, step=args.epochs+epoch)
             
-                if epoch % 100 == 0:
+                if epoch % 100 == 0 or epoch == args.finetuneEpochs - 1 :
                     # Log in wandb the following on the training and validation sets:
                     #   - Mean Square Error of Performance (RMSEP) for encoder model
                     #   - RMSEP for decoder model
@@ -520,13 +546,15 @@ if __name__ == "__main__":
                     finetuneRPD = torch.std(finetuneEncoderPreds[:, -1]) / torch.std(finetuneGTmsoc)
 
                     finetuneDecoderRMSEP = 0 if args.noDecoder else torch.sqrt(torch.mean((finetuneDecoderPreds - finetuneGTspec) ** 2))
+                    finetuneDecoderMRMSE = 0 if args.noDecoder else torch.mean(torch.sqrt(torch.mean((finetuneDecoderPreds - finetuneGTspec) ** 2,axis=1)))
 
                     # Log metrics in wandb
                     wandb.log({"Encoder_Finetune_RMSEP": finetuneRMSEP,
                                 "Encoder_Finetune_R2": finetuneR2,
                                 "Encoder_Finetune_Bias": finetuneBias,
                                 "Encoder_Finetune_RPD": finetuneRPD,
-                                "Decoder_Finetune_RMSEP": finetuneDecoderRMSEP})
+                                "Decoder_Finetune_RMSEP": finetuneDecoderRMSEP,
+                                "Decoder_Finetune_MRMSE": finetuneDecoderMRMSE}, step=args.epochs+epoch)
 
                     # Get preds on full val set
                     validationEncoderPreds = encoder_model(finetuneValGTspec)
@@ -538,27 +566,55 @@ if __name__ == "__main__":
                     validationRPD = torch.std(validationEncoderPreds[:, -1]) / torch.std(finetuneValGTmsoc)
 
                     validationDecoderRMSEP = 0 if args.noDecoder else torch.sqrt(torch.mean((validationDecoderPreds - finetuneValGTspec) ** 2))
+                    validationDecoderMRMSE = 0 if args.noDecoder else torch.mean(torch.sqrt(torch.mean((validationDecoderPreds - finetuneValGTspec) ** 2,axis=1)))
 
                     wandb.log({"Encoder_FinetuneValidation_RMSEP": validationRMSEP,
                             "Encoder_FinetuneValidation_R2": validationR2,
                             "Encoder_FinetuneValidation_Bias": validationBias,
                             "Encoder_FinetuneValidation_RPD": validationRPD,
-                            "Decoder_FinetuneValidation_RMSEP": validationDecoderRMSEP})
+                            "Decoder_FinetuneValidation_RMSEP": validationDecoderRMSEP,
+                            "Decoder_FinetuneValidation_MRMSE": validationDecoderMRMSE}, step=args.epochs+epoch)
                     
                     # Log decoder model parameters in wandb
-                    if not args.noDecoder and not args.decoderModel :
-                        wandb.log({"rrSOC_finetuned": decoder_model.rrsoc.detach().item()})
+                    if not args.noDecoder : 
+                        if not args.decoderModel :
+                            wandb.log({"rrSOC_finetuned": decoder_model.rrsoc.detach().item()}, step=args.epochs+epoch)
 
-                        # Log fsoc graph in wandb
-                        tfsoc = decoder_model.fsoc.detach()
-                        fsocTableDat = [[x, y] for (x, y) in zip(XF,tfsoc)]
-                        fsocTable = wandb.Table(data=fsocTableDat, columns=["Wavelength", "SOC Reflectance"])
+                            # Log fsoc graph in wandb
+                            tfsoc = decoder_model.fsoc.detach()
+                            fsocTableDat = [[x, y] for (x, y) in zip(XF,tfsoc)]
+                            fsocTable = wandb.Table(data=fsocTableDat, columns=["Wavelength", "SOC Reflectance"])
+                            wandb.log(
+                                {
+                                    "Fsoc_finetuned": wandb.plot.line(
+                                        fsocTable, "Wavelength", "SOC Reflectance", title="Regressed SOC Spectrum"
+                                    )
+                                }, step=args.epochs+epoch
+                            )
+
+                        # Log pred errors on validation set
+                        predSOCerr = (validationEncoderPreds[:, -1] - finetuneValGTmsoc).detach()
+                        predRMSEP = torch.sqrt(torch.mean((validationDecoderPreds - finetuneValGTspec) ** 2,axis=1))
+                        predTableDat = [[x, y] for (x, y) in zip(predSOCerr,predRMSEP)]
+                        predTable = wandb.Table(data=predTableDat, columns=["SOC prediction error", "Spectrum prediction RMSE"])
                         wandb.log(
                             {
-                                "Fsoc_finetuned": wandb.plot.line(
-                                    fsocTable, "Wavelength", "SOC Reflectance", title="Regressed SOC Spectrum"
+                                "EvD_Finetuned_Val_Pred_Error": wandb.plot.line(
+                                    fsocTable, "SOC prediction error", "Spectrum prediction RMSE", title="Spectrum Prediction Error vs. SOC Prediction Error"
                                 )
-                            }
+                            }, step=args.epochs+epoch
+                        )
+
+                        # Log pred errors on validation set as function of wavelength
+                        vpredRMSEP = torch.sqrt(torch.mean((validationDecoderPreds - finetuneValGTspec) ** 2,axis=0))
+                        vpredTableDat = [[x, y] for (x, y) in zip(XF,vpredRMSEP)]
+                        vpredTable = wandb.Table(data=vpredTableDat, columns=["Wavelength [nm]", "Spectrum prediction RMSE"])
+                        wandb.log(
+                            {
+                                "D_Val_Pred_Error_Wavelength": wandb.plot.line(
+                                    vpredTable, "Wavelength [nm]", "Spectrum prediction RMSE", title="Spectrum Prediction Error vs. Wavelength"
+                                )
+                            }, step=args.epochs+epoch
                         )
 
         torch.save(encoder_model.state_dict(), f"models/{runName}_encoder_finetuned.pt")
