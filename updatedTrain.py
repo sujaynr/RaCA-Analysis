@@ -2,8 +2,11 @@
 import pdb
 import time
 import argparse
+import random
 
 # Third-party libraries
+import numpy as np
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -68,11 +71,14 @@ if __name__ == "__main__":
     parser.add_argument("--epochs",     type=int, default=10,       help="Number of training epochs")
     parser.add_argument("--batch",      type=int, default=75,       help="Batch Size")
     parser.add_argument("--logName",    type=str, default="test",   help="Base name for output files.") 
+    parser.add_argument("--trainValSplit", type=float, default=-1, help="Fraction of each region to use for validation. Negative number means use site-based cross-validation.")
 
     parser.add_argument("--noDecoder",      default=False, action='store_true', help="Flag to disable decoder model and only consider end-to-end encoder performance.") 
     parser.add_argument("--disableRhorads", default=False, action='store_true', help="Flag to disable conversion of mass abundance to area abundance via rhorads.") 
     parser.add_argument("--decoderModel",   default=False, action='store_true', help="Flag to implement an ANN decoder model in place of the linear mixing model.") 
     parser.add_argument("--fullFit",        default=False, action='store_true', help="Flag to fit the entire dataset, without validation.") 
+    parser.add_argument("--regularizationTest", default=False, action='store_true', help="Flag to test regularization technique.")
+    parser.add_argument("--fixRandomSeed", default=False, action='store_true', help="Flag to fix random seed for reproducibility.")
 
     parser.add_argument("--spectraSOCLocation",         type=str, default="data_utils/ICLRDataset_RaCASpectraAndSOC.h5", help="File name for soil spectra and SOC numbers.") 
     parser.add_argument("--splitIndicesLocation",       type=str, default="data_utils/ICLRDataset_splitIndices.h5", help="File name for soil spectrum index, split by region number.") 
@@ -87,13 +93,13 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
 
-    model_choices = {
-        "s": "Standard Linear",
-        "c1": "1D CNN",
-        "c1u": "1D CNN with Uncertainties",
-        "r": "RNN",
-        "t": "Transformer"
-    }
+    if args.trainValSplit > 0 and (not args.fullFit and not args.fixRandomSeed) :
+        raise ValueError("Error: fullFit and fixRandomSeed must be True if trainValSplit is > 0.")
+
+    if args.fixRandomSeed :
+        torch.manual_seed(0)
+        random.seed(0)
+        np.random.seed(0)
 
     runName = f"{args.logName}_{args.encoderModel}_{args.crossValidationRegion}_{args.bootstrapIndex}_nD{args.noDecoder}_dR{args.disableRhorads}_dM{args.decoderModel}_ff{args.fullFit}"
 
@@ -110,6 +116,9 @@ if __name__ == "__main__":
             "disableRhorads": args.disableRhorads,
             "decoderModel": args.decoderModel,
             "fullFit": args.fullFit,
+            "regularizationTest": args.regularizationTest,
+            "trainValSplit": args.trainValSplit,
+            "fixRandomSeed": args.fixRandomSeed,
             "spectraSOCLocation": args.spectraSOCLocation,
             "splitIndicesLocation": args.splitIndicesLocation,
             "endmemberSpectraLocation": args.endmemberSpectraLocation,
@@ -131,14 +140,31 @@ if __name__ == "__main__":
     # Load the indices file:
     indices_file = h5py.File(args.splitIndicesLocation, 'r')
 
-    # Get the validation indices for the specified cross-validation region:
-    val_indices = indices_file[f'{args.crossValidationRegion}_indices'][:] if not args.fullFit else None
-
-    # Train indices should cover the remaining RaCA regions:
+    val_indices = None
     train_indices = None
-    for i in range(1,19) :
-        if i == 17 or i == args.crossValidationRegion : continue
-        train_indices = torch.tensor(indices_file[f'{i}_indices'][:]) if train_indices is None else torch.cat((train_indices,torch.tensor(indices_file[f'{i}_indices'][:])))
+
+    if args.trainValSplit < 0 :
+        # Get the validation indices for the specified cross-validation region:
+        val_indices = indices_file[f'{args.crossValidationRegion}_indices'][:] if not args.fullFit else None
+
+        # Train indices should cover the remaining RaCA regions:
+        for i in range(1,19) :
+            if i == 17 or i == args.crossValidationRegion : continue
+            train_indices = torch.tensor(indices_file[f'{i}_indices'][:]) if train_indices is None else torch.cat((train_indices,torch.tensor(indices_file[f'{i}_indices'][:])))
+    
+    else :
+
+        for i in range(1,19) :
+            if i == 17 : continue
+            region_indices = indices_file[f'{i}_indices'][:]
+
+            # split region by train/val split
+            val_size = int(args.trainValSplit * len(region_indices))
+            train_size = len(region_indices) - val_size
+            region_indices = np.random.permutation(region_indices)
+
+            val_indices   = torch.tensor(region_indices[:val_size]) if val_indices   is None else torch.cat((val_indices,  torch.tensor(region_indices[:val_size])))
+            train_indices = torch.tensor(region_indices[val_size:]) if train_indices is None else torch.cat((train_indices,torch.tensor(region_indices[val_size:])))
 
     ###
     # Load training and validation datasets and prepare batch loaders:
@@ -251,6 +277,7 @@ if __name__ == "__main__":
         total_encoder_loss = 0.0
         total_decoder_loss = 0.0
         maxllf = 0.0
+        total_loss_factor = 0.0
 
         # Batching and training
         for batch_data in training_data_loader:
@@ -276,6 +303,12 @@ if __name__ == "__main__":
             # Calculate the combined loss
             loss = (encoder_loss/(0.0041**2) + decoder_loss/(0.01**2)) * llf
 
+            lossfactor = 1.0 
+            if not args.noDecoder and args.regularizationTest :
+                lossfactor += 100.0*torch.mean((encoderPreds[:,-1] - batch_tmsoc[:])**2 / 0.0041**2 / (torch.mean((decoderPreds - batch_tIs)**2 / 0.01**2, axis=1) + 50.0))
+
+            loss = loss * lossfactor
+
             # Backpropagate the gradients for both models
             combined_optimizer.zero_grad()
             loss.backward()
@@ -284,15 +317,18 @@ if __name__ == "__main__":
             # Accumulate batch losses
             total_encoder_loss += encoder_loss.item()
             total_decoder_loss += decoder_loss if args.noDecoder else decoder_loss.item()
+            total_loss_factor += lossfactor if args.noDecoder or not args.regularizationTest else lossfactor.item()
 
         # Calculate the average loss for this epoch
         avg_encoder_loss = total_encoder_loss / len(training_data_loader)
         avg_decoder_loss = total_decoder_loss / len(training_data_loader)
+        avg_loss_factor = total_loss_factor / len(training_data_loader)
 
         wandb.log({"Encoder_Training_Loss": avg_encoder_loss, 
                    "Decoder_Training_Loss": avg_decoder_loss, 
                    "Total_Training_Loss": avg_encoder_loss/(0.0041**2) + avg_decoder_loss/(0.01**2),
-                   "Max_LagrangeLossFactor": maxllf}, step=epoch)
+                   "Max_LagrangeLossFactor": maxllf,
+                   "LossFactor": avg_loss_factor}, step=epoch)
 
         """ ############################################################################################
             Validate models
@@ -325,7 +361,7 @@ if __name__ == "__main__":
                            "Decoder_Validation_Loss": avg_decoder_lossV,
                            "Total_Validation_Loss": avg_encoder_lossV/(0.0041**2) + avg_decoder_lossV/(0.01**2)}, step=epoch)
         
-            if epoch % 100 == 0 or epoch == args.epochs - 1:
+            if epoch == 0 or epoch % 50 == 0 or epoch == args.epochs - 1:
                 # Log in wandb the following on the training and validation sets:
                 #   - Mean Square Error of Performance (MSEP) for encoder model
                 #   - MSEP for decoder model
@@ -393,8 +429,8 @@ if __name__ == "__main__":
                         )
 
                     # Log pred errors on validation set
-                    predSOCerr = (validationEncoderPreds[:, -1] - validationGTmsoc).detach()
-                    predRMSEP = torch.sqrt(torch.mean((validationDecoderPreds - validationGTspec) ** 2,axis=1))
+                    predSOCerr = ((validationEncoderPreds[:, -1] - validationGTmsoc)**2/0.0041/0.0041).detach()
+                    predRMSEP = torch.mean((validationDecoderPreds - validationGTspec) ** 2/0.01/0.01,axis=1)
                     predTableDat = [[x, y] for (x, y) in zip(predSOCerr,predRMSEP)]
                     predTable = wandb.Table(data=predTableDat, columns=["SOC prediction error", "Spectrum prediction RMSE"])
                     wandb.log(
@@ -527,7 +563,7 @@ if __name__ == "__main__":
                           "Decoder_FinetuneValidation_Loss": avg_decoder_lossV,
                           "Total_FinetuneValidation_Loss": avg_encoder_lossV/(0.0041**2) + avg_decoder_lossV/(0.01**2)}, step=args.epochs+epoch)
             
-                if epoch % 100 == 0 or epoch == args.finetuneEpochs - 1 :
+                if epoch % 10 == 0 or epoch == args.finetuneEpochs - 1 :
                     # Log in wandb the following on the training and validation sets:
                     #   - Mean Square Error of Performance (RMSEP) for encoder model
                     #   - RMSEP for decoder model
@@ -600,7 +636,7 @@ if __name__ == "__main__":
                         wandb.log(
                             {
                                 "EvD_Finetuned_Val_Pred_Error": wandb.plot.line(
-                                    fsocTable, "SOC prediction error", "Spectrum prediction RMSE", title="Spectrum Prediction Error vs. SOC Prediction Error"
+                                    predTable, "SOC prediction error", "Spectrum prediction RMSE", title="Spectrum Prediction Error vs. SOC Prediction Error"
                                 )
                             }, step=args.epochs+epoch
                         )
