@@ -357,7 +357,7 @@ if __name__ == "__main__":
                 if args.trainDecoder: 
                     llf = 1.0 if args.decoderModel else decoder_model.computeLagrangeLossFactor()
 
-            encoder_loss = encoder_loss/trainingEncoderLossNum
+            encoder_loss = encoder_loss*0. if trainingEncoderLossNum == 0 else encoder_loss/trainingEncoderLossNum
             decoder_loss = decoder_loss/trainingDecoderLossNum
 
             encoder_lossV = encoder_lossV/validationEncoderLossNum
