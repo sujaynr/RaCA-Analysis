@@ -50,7 +50,7 @@ class HDF5Dataset(data.Dataset):
             self.dataset = torch.tensor(self.file_mag['data'][:])
 
     def __len__(self):
-        return len(self.dataset)
+        return self.dataset.shape[0]
 
     def __getitem__(self, index):
         return self.dataset[index,:][:]
