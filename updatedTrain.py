@@ -193,8 +193,8 @@ if __name__ == "__main__":
     trainingGTmsoc = dataset.dataset[train_indices,-1].to(device)
     trainingGTspec = dataset.dataset[train_indices,:-1].to(device)
 
-    validationGTmsoc = None if args.fullFit else dataset.dataset[val_indices,-1].to(device)
-    validationGTspec = None if args.fullFit else dataset.dataset[val_indices,:-1].to(device)
+    validationGTmsoc = None if args.fullFit and args.trainValSplit < 0 else dataset.dataset[val_indices,-1].to(device)
+    validationGTspec = None if args.fullFit and args.trainValSplit < 0 else dataset.dataset[val_indices,:-1].to(device)
 
     finetuneGTmsoc = None if args.fullFit else dataset.dataset[bootstrap_indices,-1].to(device)
     finetuneGTspec = None if args.fullFit else dataset.dataset[bootstrap_indices,:-1].to(device)
@@ -203,6 +203,10 @@ if __name__ == "__main__":
     finetuneValGTmsoc = None if args.fullFit else dataset.dataset[valb_indices,-1].to(device)
     finetuneValGTspec = None if args.fullFit else dataset.dataset[valb_indices,:-1].to(device)
 
+    # Save the training and validation indices for this run
+    if args.fullFit and args.trainValSplit < 0 :
+        np.save(f"models/{runName}_training_indices.npy", train_indices)
+        np.save(f"models/{runName}_validation_indices.npy", val_indices)
 
     """ ############################################################################################
         Prepare models
@@ -391,7 +395,7 @@ if __name__ == "__main__":
                             "Decoder_Training_MRMSE": trainingDecoderMRMSE}, step=epoch)
 
                 # Compute metrics for validation set
-                if not args.fullFit:
+                if not args.fullFit or args.trainValSplit > 0 :
                     # Get preds on full val set
                     validationEncoderPreds = encoder_model(validationGTspec)
                     validationDecoderPreds = None if args.noDecoder else decoder_model(validationEncoderPreds)
@@ -473,7 +477,7 @@ if __name__ == "__main__":
 
 
     """ ############################################################################################
-        Fine-tune models (TODO)
+        Fine-tune models
     """
     if not args.fullFit :
         # Set up optimizer
