@@ -122,6 +122,7 @@ if __name__ == "__main__":
             "regularizationTest": args.regularizationTest,
             "trainValSplit": args.trainValSplit,
             "fixRandomSeed": args.fixRandomSeed,
+            "setRandomSeedTo": args.setRandomSeedTo,
             "spectraSOCLocation": args.spectraSOCLocation,
             "splitIndicesLocation": args.splitIndicesLocation,
             "endmemberSpectraLocation": args.endmemberSpectraLocation,
