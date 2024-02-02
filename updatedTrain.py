@@ -79,6 +79,7 @@ if __name__ == "__main__":
     parser.add_argument("--fullFit",        default=False, action='store_true', help="Flag to fit the entire dataset, without validation.") 
     parser.add_argument("--regularizationTest", default=False, action='store_true', help="Flag to test regularization technique.")
     parser.add_argument("--fixRandomSeed", default=False, action='store_true', help="Flag to fix random seed for reproducibility.")
+    parser.add_argument("--setRandomSeedTo", type=int, default=0, help="Set random seed to this value.")
 
     parser.add_argument("--spectraSOCLocation",         type=str, default="data_utils/ICLRDataset_RaCASpectraAndSOC.h5", help="File name for soil spectra and SOC numbers.") 
     parser.add_argument("--splitIndicesLocation",       type=str, default="data_utils/ICLRDataset_splitIndices.h5", help="File name for soil spectrum index, split by region number.") 
@@ -97,11 +98,13 @@ if __name__ == "__main__":
         raise ValueError("Error: fullFit and fixRandomSeed must be True if trainValSplit is > 0.")
 
     if args.fixRandomSeed :
-        torch.manual_seed(0)
-        random.seed(0)
-        np.random.seed(0)
+        torch.manual_seed(args.setRandomSeedTo)
+        random.seed(args.setRandomSeedTo)
+        np.random.seed(args.setRandomSeedTo)
 
-    runName = f"{args.logName}_{args.encoderModel}_{args.crossValidationRegion}_{args.bootstrapIndex}_nD{args.noDecoder}_dR{args.disableRhorads}_dM{args.decoderModel}_ff{args.fullFit}"
+    runName = f"{args.logName}_{args.encoderModel}_{args.crossValidationRegion}"
+    runName += f"_{args.bootstrapIndex}_nD{args.noDecoder}_dR{args.disableRhorads}"
+    runName += f"_dM{args.decoderModel}_ff{args.fullFit}_rS{args.setRandomSeedTo}"
 
     wandb.init(
         project="ICLR_SOC_Analysis_2024",
@@ -365,7 +368,7 @@ if __name__ == "__main__":
                            "Decoder_Validation_Loss": avg_decoder_lossV,
                            "Total_Validation_Loss": avg_encoder_lossV/(0.0041**2) + avg_decoder_lossV/(0.01**2)}, step=epoch)
         
-            if epoch == 0 or epoch % 50 == 0 or epoch == args.epochs - 1:
+            if epoch == 0 or epoch % 50 == 0 or epoch >= args.epochs - 11:
                 # Log in wandb the following on the training and validation sets:
                 #   - Mean Square Error of Performance (MSEP) for encoder model
                 #   - MSEP for decoder model
@@ -567,7 +570,7 @@ if __name__ == "__main__":
                           "Decoder_FinetuneValidation_Loss": avg_decoder_lossV,
                           "Total_FinetuneValidation_Loss": avg_encoder_lossV/(0.0041**2) + avg_decoder_lossV/(0.01**2)}, step=args.epochs+epoch)
             
-                if epoch % 10 == 0 or epoch == args.finetuneEpochs - 1 :
+                if epoch % 10 == 0 or epoch >= args.finetuneEpochs - 11 :
                     # Log in wandb the following on the training and validation sets:
                     #   - Mean Square Error of Performance (RMSEP) for encoder model
                     #   - RMSEP for decoder model

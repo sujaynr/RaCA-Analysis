@@ -66,46 +66,46 @@ do
             export encoderLoc="./models/final_s_${regionNumber}_${bootstrapIndex}_nD${nDText}_dRFalse_dM${dMText}_ffFalse_encoder_final.pt"
             export decoderLoc="./models/final_s_${regionNumber}_${bootstrapIndex}_nD${nDText}_dRFalse_dM${dMText}_ffFalse_decoder_final.pt"
 
-            # echo " - Finetuning for region $regionNumber, with no training data, only val spectra + bootstrap all"
-            # python freezeDecoderFinetuneExperiment.py \
-            #                         --encoderModel s \
-            #                         --trainDecoder ${tD} \
-            #                         --decoderModel ${dM} \
-                                    # --noDecoder ${nD} \
-            #                         --noTrainingData \
-            #                         --crossValidationRegion $regionNumber \
-            #                         --bootstrapIndex $bootstrapIndex \
-            #                         --epochs $nEpochs \
-            #                         --batch $batchSize \
-            #                         --spectraSOCLocation $spectraSOCLocation \
-            #                         --splitIndicesLocation $splitIndicesLocation \
-            #                         --endmemberSpectraLocation $endmemberSpectraLocation \
-            #                         --encoderLocation $encoderLoc \
-            #                         --decoderLocation $decoderLoc \
-            #                         --logName $basename
-
-            # #########################################################################################
-
-            # echo " - Finetuning for region $regionNumber, with no training or bootstrap data, only val spectra"
-            # python freezeDecoderFinetuneExperiment.py \
-            #                         --encoderModel s \
-            #                         --trainDecoder ${tD} \
-            #                         --decoderModel ${dM} \
-                                    # --noDecoder ${nD} \
-            #                         --noTrainingData \
-            #                         --noBootstrapSOCData \
-            #                         --crossValidationRegion $regionNumber \
-            #                         --bootstrapIndex $bootstrapIndex \
-            #                         --epochs $nEpochs \
-            #                         --batch $batchSize \
-            #                         --spectraSOCLocation $spectraSOCLocation \
-            #                         --splitIndicesLocation $splitIndicesLocation \
-            #                         --endmemberSpectraLocation $endmemberSpectraLocation \
-            #                         --encoderLocation $encoderLoc \
-            #                         --decoderLocation $decoderLoc \
-            #                         --logName $basename
+            echo " - Finetuning for region $regionNumber, with no training data, only val spectra + bootstrap all"
+            python freezeDecoderFinetuneExperiment.py \
+                                    --encoderModel s \
+                                    --trainDecoder ${tD} \
+                                    --decoderModel ${dM} \
+                                    --noDecoder ${nD} \
+                                    --noTrainingData \
+                                    --crossValidationRegion $regionNumber \
+                                    --bootstrapIndex $bootstrapIndex \
+                                    --epochs $nEpochs \
+                                    --batch $batchSize \
+                                    --spectraSOCLocation $spectraSOCLocation \
+                                    --splitIndicesLocation $splitIndicesLocation \
+                                    --endmemberSpectraLocation $endmemberSpectraLocation \
+                                    --encoderLocation $encoderLoc \
+                                    --decoderLocation $decoderLoc \
+                                    --logName $basename
 
             #########################################################################################
+
+            echo " - Finetuning for region $regionNumber, with no training or bootstrap data, only val spectra"
+            python freezeDecoderFinetuneExperiment.py \
+                                    --encoderModel s \
+                                    --trainDecoder ${tD} \
+                                    --decoderModel ${dM} \
+                                    --noDecoder ${nD} \
+                                    --noTrainingData \
+                                    --noBootstrapSOCData \
+                                    --crossValidationRegion $regionNumber \
+                                    --bootstrapIndex $bootstrapIndex \
+                                    --epochs $nEpochs \
+                                    --batch $batchSize \
+                                    --spectraSOCLocation $spectraSOCLocation \
+                                    --splitIndicesLocation $splitIndicesLocation \
+                                    --endmemberSpectraLocation $endmemberSpectraLocation \
+                                    --encoderLocation $encoderLoc \
+                                    --decoderLocation $decoderLoc \
+                                    --logName $basename
+
+            # ########################################################################################
 
             echo " - Finetuning for region $regionNumber, with no training data or val spectra, only bootstrap data"
             python freezeDecoderFinetuneExperiment.py \
