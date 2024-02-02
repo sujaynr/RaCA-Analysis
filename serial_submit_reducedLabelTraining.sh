@@ -9,9 +9,9 @@ export WANDB_MODE=online
 export currWorkingDir=$(pwd)
 
 # Set global variables
-export nEpochs=1000
+export nEpochs=500
 export batchSize=300
-export nFineTuneEpochs=100
+export nFineTuneEpochs=25
 export bootstrapIndex=2
 export spectraSOCLocation="${currWorkingDir}/data_utils/ICLRDataset_RaCASpectraAndSOC_v2.h5"
 export splitIndicesLocation="${currWorkingDir}/data_utils/ICLRDataset_SplitIndices_v2.h5"
@@ -24,10 +24,43 @@ export basename=$1
 # Loop over all integers from 1 to 18
 for regionNumber in {1..18}
 do 
+    echo "Running region $regionNumber" 
+
+    if [[ $regionNumber -eq 17 ]]
+    then
+        continue
+    fi
 
     for modelType in "$2"
     do
-        echo "\t\t - Running model $modelType with no decoder"
+        echo " - Running model $modelType with ANN decoder"
+        python reducedLabelTraining.py --encoderModel $modelType \
+                                        --decoderModel \
+                                        --crossValidationRegion $regionNumber \
+                                        --bootstrapIndex $bootstrapIndex \
+                                        --epochs $nEpochs \
+                                        --batch $batchSize \
+                                        --spectraSOCLocation $spectraSOCLocation \
+                                        --splitIndicesLocation $splitIndicesLocation \
+                                        --endmemberSpectraLocation $endmemberSpectraLocation \
+                                        --logName $basename \
+                                        --finetuneEpochs $nFineTuneEpochs
+
+        echo " - Running model $modelType with no decoder"
+        python reducedLabelTraining.py --encoderModel $modelType \
+                                        --noDecoder \
+                                        --crossValidationRegion $regionNumber \
+                                        --bootstrapIndex $bootstrapIndex \
+                                        --epochs $nEpochs \
+                                        --batch $batchSize \
+                                        --spectraSOCLocation $spectraSOCLocation \
+                                        --splitIndicesLocation $splitIndicesLocation \
+                                        --endmemberSpectraLocation $endmemberSpectraLocation \
+                                        --logName $basename \
+                                        --finetuneEpochs $nFineTuneEpochs
+
+
+        echo " - Running model $modelType with physical decoder"
         python reducedLabelTraining.py --encoderModel $modelType \
                                         --crossValidationRegion $regionNumber \
                                         --bootstrapIndex $bootstrapIndex \
@@ -41,5 +74,4 @@ do
 
     done
 
-    exit
 done

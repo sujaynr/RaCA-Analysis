@@ -19,13 +19,15 @@ export basename=$1
 
 #########################################################################################
 # Submit jobs for train-val split over all regions
-for modelType in "$2" # "s" "c1" "r"
+
+for randomSeed in 100390439 23039 4054950 534
 do
     echo "\t\t - Running model $modelType with no decoder"
     python updatedTrain.py --encoderModel $modelType \
                             --noDecoder \
                             --fullFit \
                             --fixRandomSeed \
+                            --setRandomSeedTo $randomSeed \
                             --trainValSplit 0.4 \
                             --epochs $nEpochs \
                             --batch $batchSize \
@@ -40,6 +42,7 @@ do
                             --fullFit \
                             --fixRandomSeed \
                             --trainValSplit 0.4 \
+                            --setRandomSeedTo $randomSeed \
                             --epochs $nEpochs \
                             --batch $batchSize \
                             --spectraSOCLocation $spectraSOCLocation \
@@ -53,6 +56,7 @@ do
                             --decoderModel \
                             --fullFit \
                             --fixRandomSeed \
+                            --setRandomSeedTo $randomSeed \
                             --trainValSplit 0.4 \
                             --epochs $nEpochs \
                             --batch $batchSize \
