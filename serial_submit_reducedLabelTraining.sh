@@ -17,25 +17,33 @@ export spectraSOCLocation="${currWorkingDir}/data_utils/ICLRDataset_RaCASpectraA
 export splitIndicesLocation="${currWorkingDir}/data_utils/ICLRDataset_SplitIndices_v2.h5"
 export endmemberSpectraLocation="${currWorkingDir}/data_utils/ICLRDataset_USGSEndmemberSpectra.h5"
 export basename=$1
+export modelType="s"
 
 
 #########################################################################################
 # Submit jobs for train-val split over all regions
 # Loop over all integers from 1 to 18
-for regionNumber in {1..18}
-do 
-    echo "Running region $regionNumber" 
 
-    if [[ $regionNumber -eq 17 ]]
-    then
-        continue
-    fi
+for randomSeed in 0 5784387328 329823 23 983219
+do
 
-    for modelType in "$2"
-    do
-        echo " - Running model $modelType with ANN decoder"
+    # add 1 to bootstrap index
+    bootstrapIndex=$((bootstrapIndex+1))
+
+    for regionNumber in {1..18}
+    do 
+        echo "Running region $regionNumber" 
+
+        if [[ $regionNumber -eq 17 ]]
+        then
+            continue
+        fi
+
+        echo " - Running model $modelType with ANN decoder, bootstrap index $bootstrapIndex"
         python reducedLabelTraining.py --encoderModel $modelType \
                                         --decoderModel \
+                                        --fixRandomSeed \
+                                        --setRandomSeedTo $randomSeed \
                                         --crossValidationRegion $regionNumber \
                                         --bootstrapIndex $bootstrapIndex \
                                         --epochs $nEpochs \
@@ -46,9 +54,11 @@ do
                                         --logName $basename \
                                         --finetuneEpochs $nFineTuneEpochs
 
-        echo " - Running model $modelType with no decoder"
+        echo " - Running model $modelType with no decoder, bootstrap index $bootstrapIndex"
         python reducedLabelTraining.py --encoderModel $modelType \
                                         --noDecoder \
+                                        --fixRandomSeed \
+                                        --setRandomSeedTo $randomSeed \
                                         --crossValidationRegion $regionNumber \
                                         --bootstrapIndex $bootstrapIndex \
                                         --epochs $nEpochs \
@@ -60,8 +70,10 @@ do
                                         --finetuneEpochs $nFineTuneEpochs
 
 
-        echo " - Running model $modelType with physical decoder"
+        echo " - Running model $modelType with physical decoder, bootstrap index $bootstrapIndex"
         python reducedLabelTraining.py --encoderModel $modelType \
+                                        --fixRandomSeed \
+                                        --setRandomSeedTo $randomSeed \
                                         --crossValidationRegion $regionNumber \
                                         --bootstrapIndex $bootstrapIndex \
                                         --epochs $nEpochs \
