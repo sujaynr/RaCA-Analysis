@@ -202,7 +202,7 @@ if __name__ == "__main__":
     finetuneGTmsoc = None if args.fullFit else dataset.dataset[bootstrap_indices,-1].to(device)
     finetuneGTspec = None if args.fullFit else dataset.dataset[bootstrap_indices,:-1].to(device)
 
-    valb_indices = None if args.fullFit else val_indices #[i for i in val_indices if i not in bootstrap_indices]
+    valb_indices = None if args.fullFit else [i for i in val_indices if i not in bootstrap_indices]
     finetuneValGTmsoc = None if args.fullFit else dataset.dataset[valb_indices,-1].to(device)
     finetuneValGTspec = None if args.fullFit else dataset.dataset[valb_indices,:-1].to(device)
 
@@ -592,12 +592,12 @@ if __name__ == "__main__":
                     finetuneDecoderMRMSE = 0 if args.noDecoder else torch.mean(torch.sqrt(torch.mean((finetuneDecoderPreds - finetuneGTspec) ** 2,axis=1)))
 
                     # Log metrics in wandb
-                    wandb.log({"Encoder_Finetune_RMSEP": finetuneRMSEP,
-                                "Encoder_Finetune_R2": finetuneR2,
-                                "Encoder_Finetune_Bias": finetuneBias,
-                                "Encoder_Finetune_RPD": finetuneRPD,
-                                "Decoder_Finetune_RMSEP": finetuneDecoderRMSEP,
-                                "Decoder_Finetune_MRMSE": finetuneDecoderMRMSE}, step=args.epochs+epoch)
+                    wandb.log({"Encoder_FinetuneTraining_RMSEP": finetuneRMSEP,
+                                "Encoder_FinetuneTraining_R2": finetuneR2,
+                                "Encoder_FinetuneTraining_Bias": finetuneBias,
+                                "Encoder_FinetuneTraining_RPD": finetuneRPD,
+                                "Decoder_FinetuneTraining_RMSEP": finetuneDecoderRMSEP,
+                                "Decoder_FinetuneTraining_MRMSE": finetuneDecoderMRMSE}, step=args.epochs+epoch)
 
                     # Get preds on full val set
                     validationEncoderPreds = encoder_model(finetuneValGTspec)
