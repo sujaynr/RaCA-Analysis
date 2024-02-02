@@ -15,7 +15,7 @@ export spectraSOCLocation="${currWorkingDir}/data_utils/ICLRDataset_RaCASpectraA
 export splitIndicesLocation="${currWorkingDir}/data_utils/ICLRDataset_SplitIndices_v2.h5"
 export endmemberSpectraLocation="${currWorkingDir}/data_utils/ICLRDataset_USGSEndmemberSpectra.h5"
 export basename=$1
-
+export modelType="s"
 
 #########################################################################################
 # Submit jobs for train-val split over all regions

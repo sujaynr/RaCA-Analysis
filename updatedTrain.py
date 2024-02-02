@@ -368,7 +368,7 @@ if __name__ == "__main__":
                            "Decoder_Validation_Loss": avg_decoder_lossV,
                            "Total_Validation_Loss": avg_encoder_lossV/(0.0041**2) + avg_decoder_lossV/(0.01**2)}, step=epoch)
         
-            if epoch == 0 or epoch % 50 == 0 or epoch == args.epochs - 1:
+            if epoch == 0 or epoch % 50 == 0 or epoch >= args.epochs - 11:
                 # Log in wandb the following on the training and validation sets:
                 #   - Mean Square Error of Performance (MSEP) for encoder model
                 #   - MSEP for decoder model
@@ -570,7 +570,7 @@ if __name__ == "__main__":
                           "Decoder_FinetuneValidation_Loss": avg_decoder_lossV,
                           "Total_FinetuneValidation_Loss": avg_encoder_lossV/(0.0041**2) + avg_decoder_lossV/(0.01**2)}, step=args.epochs+epoch)
             
-                if epoch % 10 == 0 or epoch == args.finetuneEpochs - 1 :
+                if epoch % 10 == 0 or epoch >= args.finetuneEpochs - 11 :
                     # Log in wandb the following on the training and validation sets:
                     #   - Mean Square Error of Performance (RMSEP) for encoder model
                     #   - RMSEP for decoder model
