@@ -645,7 +645,28 @@ if __name__ == "__main__":
                     #   - R^2 Score for SOC predictions
                     #   - Bias for SOC predictions
                     #   - Ratio of performance to deviation (RPD) for SOC predictions
-                    
+
+                    # Get preds on full training set
+                    finetuneEncoderPredsT = encoder_model(valbspec)
+                    finetuneDecoderPredsT = None if args.noDecoder else decoder_model(finetuneEncoderPredsT)
+
+                    # Compute metrics for training set
+                    finetuneRMSEPT = torch.sqrt(torch.mean((finetuneEncoderPredsT[:, -1] - valbGTmsoc) ** 2))
+                    finetuneR2T = r2_score(valbGTmsoc, finetuneEncoderPredsT[:, -1])
+                    finetuneBiasT = torch.mean(finetuneEncoderPredsT[:, -1] - valbGTmsoc)
+                    finetuneRPDT = torch.std(finetuneEncoderPredsT[:, -1]) / torch.std(valbGTmsoc)
+
+                    finetuneDecoderRMSEPT = 0 if args.noDecoder else torch.sqrt(torch.mean((finetuneDecoderPredsT - valbspec) ** 2))
+                    finetuneDecoderMRMSET = 0 if args.noDecoder else torch.mean(torch.sqrt(torch.mean((finetuneDecoderPredsT - valbspec) ** 2,axis=1)))
+
+                    # Log metrics in wandb
+                    wandb.log({"Encoder_FinetuneTraining_RMSEP": finetuneRMSEPT,
+                                "Encoder_FinetuneTraining_R2": finetuneR2T,
+                                "Encoder_FinetuneTraining_Bias": finetuneBiasT,
+                                "Encoder_FinetuneTraining_RPD": finetuneRPDT,
+                                "Decoder_FinetuneTraining_RMSEP": finetuneDecoderRMSEPT,
+                                "Decoder_FinetuneTraining_MRMSE": finetuneDecoderMRMSET}, step=args.epochs+epoch)
+
                     # Get preds on full training set
                     finetuneEncoderPreds = encoder_model(valnbspec)
                     finetuneDecoderPreds = None if args.noDecoder else decoder_model(finetuneEncoderPreds)
