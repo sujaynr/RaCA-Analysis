@@ -148,11 +148,7 @@ if __name__ == "__main__":
     val_bootstrap_indices, val_nobootstr_indices = None, None
     if not args.fullFit :
         val_indices = indices_file[f'{args.crossValidationRegion}_indices'][:]
-        val_bootstrap_indices = indices_file[f'{args.crossValidationRegion}_bootstrap_{args.bootstrapIndex}'][:]
-
-        # Take only half of the bootstrap indices for the fine-tuning dataset
-        # val_bootstrap_indices = val_bootstrap_indices[:len(val_bootstrap_indices)//2]
-
+        val_bootstrap_indices = indices_file[f'{args.crossValidationRegion}_bootstrap5pedon_{args.bootstrapIndex}'][:]
         val_nobootstr_indices = [i for i in val_indices if i not in val_bootstrap_indices]
 
     # Train indices should cover the remaining RaCA regions:
