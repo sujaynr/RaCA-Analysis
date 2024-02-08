@@ -12,7 +12,7 @@ export currWorkingDir=$(pwd)
 export nEpochs=500
 export batchSize=300
 export nFineTuneEpochs=25
-export bootstrapIndex=2
+export bootstrapIndex=0
 export spectraSOCLocation="${currWorkingDir}/data_utils/ICLRDataset_RaCASpectraAndSOC_v2.h5"
 export splitIndicesLocation="${currWorkingDir}/data_utils/ICLRDataset_SplitIndices_v2.h5"
 export endmemberSpectraLocation="${currWorkingDir}/data_utils/ICLRDataset_USGSEndmemberSpectra.h5"
@@ -24,11 +24,11 @@ export modelType="s"
 # Submit jobs for train-val split over all regions
 # Loop over all integers from 1 to 18
 
-for randomSeed in 0 5784387328 329823 23 983219
+for randomSeed in 32423598 102901 18473 29395 0 5784387328 329823 23 983219
 do
-
     # add 1 to bootstrap index
     bootstrapIndex=$((bootstrapIndex+1))
+
 
     for regionNumber in {1..18}
     do 
