@@ -343,7 +343,7 @@ if __name__ == "__main__":
         # Batching and training
         for batch_data in training_data_loader:
             # Extract batch data
-            batch_tIs, batch_tmsoc = batch_data[:,:-1].to(device), batch_data[:,-1].to(device)
+            batch_tIs, batch_tmsoc = batch_data[:,:-5].to(device), batch_data[:,-5].to(device)
 
             # Get abundance predictions from the encoder for the batch
             encoderPreds = encoder_model(batch_tIs)
@@ -404,7 +404,7 @@ if __name__ == "__main__":
 
                 for batch_dataV in validation_data_loader:
 
-                    batch_val_tIs, batch_val_tmsoc = batch_dataV[:,:-1].to(device), batch_dataV[:,-1].to(device)
+                    batch_val_tIs, batch_val_tmsoc = batch_dataV[:,:-5].to(device), batch_dataV[:,-5].to(device)
 
                     encoderPredsV = encoder_model(batch_val_tIs)
                     decoderPredsV = None if args.noDecoder else decoder_model(encoderPredsV)
@@ -553,7 +553,7 @@ if __name__ == "__main__":
             # Batching and training
             for batch_data in finetune_data_loader:
                 # Extract batch data
-                batch_tIs, batch_tmsoc = batch_data[:,:-1].to(device), batch_data[:,-1].to(device)
+                batch_tIs, batch_tmsoc = batch_data[:,:-5].to(device), batch_data[:,-5].to(device)
 
                 # Get abundance predictions from the encoder for the batch
                 #encoderPreds, encoderUncertainties, mean = encoder_model(batch_tIs) #edit to only have 2nd arg if model is c1u
@@ -605,7 +605,7 @@ if __name__ == "__main__":
 
                 for batch_dataV in validation_data_loader:
 
-                    batch_val_tIs, batch_val_tmsoc = batch_dataV[:,:-1].to(device), batch_dataV[:,-1].to(device)
+                    batch_val_tIs, batch_val_tmsoc = batch_dataV[:,:-5].to(device), batch_dataV[:,-5].to(device)
 
                     #encoderPredsV, encoderUncertaintiesV, meanV = encoder_model(batch_val_tIs)
                     encoderPredsV = encoder_model(batch_val_tIs)
