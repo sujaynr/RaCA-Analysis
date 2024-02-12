@@ -43,19 +43,22 @@ from models import (
         data_loader = data.DataLoader(dataset, batch_size=64, shuffle=True, num_workers=4)
 """
 class HDF5Dataset(data.Dataset):
-    def __init__(self, filename, gpu=True):
+    def __init__(self, filename, gpu=True, scanonly=False):
         super(HDF5Dataset, self).__init__()
         self.file_mag = h5py.File(filename, 'r')
+
+        self.scanonly = '' if not scanonly else '_scanonly'
+
         if gpu :
-            self.dataset = torch.tensor(self.file_mag['data'][:]).to(device)
+            self.dataset = torch.tensor(self.file_mag['data'+self.scanonly][:]).to(device)
         else :
-            self.dataset = torch.tensor(self.file_mag['data'][:])
+            self.dataset = torch.tensor(self.file_mag['data'+self.scanonly][:])
 
     def __len__(self):
-        return len(self.file_mag.keys())
+        return self.dataset.shape[0]
 
     def __getitem__(self, index):
-        return self.dataset[index,:]
+        return self.dataset[index+self.scanonly,:]
 
 
 """ ############################################################################################
@@ -67,7 +70,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Training script for different models")
     parser.add_argument("--encoderModel", choices=["s", "c1", "c1u", "r", "t"], type=str, help="Choose a model: s = Standard Linear, c1 = 1D CNN, r = RNN, t = Transformer")
     parser.add_argument("--crossValidationRegion", type=int, default=-1, help="RaCA region number for Leave-One-Region-Out cross-validation.")   
-    parser.add_argument("--bootstrapIndex",        type=int, default=-1, help="Bootstrap sample number for fine-tuning within validation region.")
+    parser.add_argument("--bootstrapIndex",        type=int, default=-1, help="Number of pedons to use in each bootstrap.")
     parser.add_argument("--epochs",     type=int, default=10,       help="Number of training epochs")
     parser.add_argument("--batch",      type=int, default=75,       help="Batch Size")
     parser.add_argument("--logName",    type=str, default="test",   help="Base name for output files.") 
@@ -81,8 +84,8 @@ if __name__ == "__main__":
     parser.add_argument("--fixRandomSeed", default=False, action='store_true', help="Flag to fix random seed for reproducibility.")
     parser.add_argument("--setRandomSeedTo", type=int, default=0, help="Set random seed to this value.")
 
-    parser.add_argument("--spectraSOCLocation",         type=str, default="data_utils/ICLRDataset_RaCASpectraAndSOC.h5", help="File name for soil spectra and SOC numbers.") 
-    parser.add_argument("--splitIndicesLocation",       type=str, default="data_utils/ICLRDataset_splitIndices.h5", help="File name for soil spectrum index, split by region number.") 
+    parser.add_argument("--spectraSOCLocation",         type=str, default="data_utils/ICLRDataset_RaCASpectraAndSOC_v3.h5", help="File name for soil spectra and SOC numbers.") 
+    parser.add_argument("--splitIndicesLocation",       type=str, default="data_utils/ICLRDataset_splitIndices_v3.h5", help="File name for soil spectrum index, split by region number.") 
     parser.add_argument("--endmemberSpectraLocation",   type=str, default="data_utils/ICLRDataset_USGSEndmemberSpectra.h5", help="File name for pure endmember spectra and rhorads.") 
 
     parser.add_argument("--lr",  type=float, default=0.00005, help="Learning rate for Adam optimizer.")
@@ -136,7 +139,7 @@ if __name__ == "__main__":
         Load datasets
     """
     dataset = HDF5Dataset(args.spectraSOCLocation)
-    dataset_size = len(dataset)
+    dataset_scanonly = HDF5Dataset(args.spectraSOCLocation, scanonly=True)
 
     ###
     # Get training data and validation data indices.
@@ -144,43 +147,81 @@ if __name__ == "__main__":
     indices_file = h5py.File(args.splitIndicesLocation, 'r')
 
     val_indices = None
+    vso_indices = None
     train_indices = None
+    tso_indices = None
 
     if args.trainValSplit < 0 :
         # Get the validation indices for the specified cross-validation region:
-        val_indices = indices_file[f'{args.crossValidationRegion}_indices'][:] if not args.fullFit else None
+        val_indices = indices_file[f'{args.crossValidationRegion}/indices'][:] if not args.fullFit else None
+        vso_indices = indices_file[f'{args.crossValidationRegion}/indices_scanonly'][:] if not args.fullFit else None
 
         # Train indices should cover the remaining RaCA regions:
         for i in range(1,19) :
             if i == 17 or i == args.crossValidationRegion : continue
-            train_indices = torch.tensor(indices_file[f'{i}_indices'][:]) if train_indices is None else torch.cat((train_indices,torch.tensor(indices_file[f'{i}_indices'][:])))
+            train_indices = torch.tensor(indices_file[f'{i}/indices'][:]) if train_indices is None else torch.cat((train_indices,torch.tensor(indices_file[f'{i}/indices'][:])))
+            tso_indices = torch.tensor(indices_file[f'{i}/indices_scanonly'][:]) if train_indices is None else torch.cat((tso_indices,torch.tensor(indices_file[f'{i}/indices_scanonly'][:])))
     
     else :
 
         for i in range(1,19) :
             if i == 17 : continue
-            region_indices = indices_file[f'{i}_indices'][:]
+            region_indices = indices_file[f'{i}/indices'][:]
+            reg_inds_scanonly = indices_file[f'{i}/indices_scanonly'][:]
 
             # split region by train/val split
             val_size = int(args.trainValSplit * len(region_indices))
-            train_size = len(region_indices) - val_size
+            vso_size = int(args.trainValSplit * len(reg_inds_scanonly))
+            
             region_indices = np.random.permutation(region_indices)
+            reg_inds_scanonly = np.random.permutation(reg_inds_scanonly)
 
             val_indices   = torch.tensor(region_indices[:val_size]) if val_indices   is None else torch.cat((val_indices,  torch.tensor(region_indices[:val_size])))
+            vso_indices   = torch.tensor(reg_inds_scanonly[:vso_size]) if vso_indices   is None else torch.cat((vso_indices,  torch.tensor(reg_inds_scanonly[:vso_size])))
             train_indices = torch.tensor(region_indices[val_size:]) if train_indices is None else torch.cat((train_indices,torch.tensor(region_indices[val_size:])))
+            tso_indices   = torch.tensor(reg_inds_scanonly[vso_size:]) if tso_indices   is None else torch.cat((tso_indices,  torch.tensor(reg_inds_scanonly[vso_size:])))
 
     ###
     # Load training and validation datasets and prepare batch loaders:
-    training_dataset   = torch.utils.data.Subset(dataset, train_indices)
-    validation_dataset = torch.utils.data.Subset(dataset, val_indices) if not args.fullFit else None
+    training_dataset   = torch.utils.data.Subset(dataset,          train_indices)
+    tso_dataset        = torch.utils.data.Subset(dataset_scanonly, tso_indices)
+    validation_dataset = torch.utils.data.Subset(dataset,          val_indices) if not args.fullFit else None
+    vso_dataset        = torch.utils.data.Subset(dataset_scanonly, vso_indices) if not args.fullFit else None
 
     training_data_loader    = data.DataLoader(training_dataset,   batch_size=args.batch, shuffle=True, num_workers=0, drop_last=True)
+    tso_data_loader         = data.DataLoader(tso_dataset,        batch_size=args.batch, shuffle=True, num_workers=0, drop_last=True)
     validation_data_loader  = data.DataLoader(validation_dataset, batch_size=args.batch, shuffle=True, num_workers=0, drop_last=True) if not args.fullFit else None
+    vso_data_loader         = data.DataLoader(vso_dataset,        batch_size=args.batch, shuffle=True, num_workers=0, drop_last=True) if not args.fullFit else None
 
+    ###
     # Load bootstrap dataset
-    bootstrap_indices = None if args.fullFit else indices_file[f'{args.crossValidationRegion}_bootstrap_{args.bootstrapIndex}'][:]
-    bootstrap_dataset = None if args.fullFit else torch.utils.data.Subset(dataset, bootstrap_indices)
-    finetune_data_loader  = None if args.fullFit else data.DataLoader(bootstrap_dataset, batch_size=len(bootstrap_dataset), shuffle=True, num_workers=0, drop_last=True)
+    bootstrap_indices,bootstrap_inds_scanonly,bootstrap_dataset,finetune_data_loader,fso_data_loader  = None, None, None, None, None
+    if not args.fullFit :
+
+        boot_keys = indices_file[f'{args.crossValidationRegion}'].keys()
+        boot_keys = [x for x in boot_keys if 'indices' not in x]
+
+        # select args.bootstrapIndex keys at random from the list of keys
+        pedon_keys = np.random.choice(boot_keys, args.bootstrapIndex, replace=False)
+
+        for pid in pedon_keys :
+            aux_keys = [x for x in indices_file[f'{args.crossValidationRegion}/{pid}'].keys() if 'indices' not in x]
+
+            new_boot_inds = torch.tensor(indices_file[f'{args.crossValidationRegion}/{pid}/indices'][:])
+            new_boot_inds_scanonly = None
+
+            for auxid in aux_keys :
+                aux_inds = torch.tensor(indices_file[f'{args.crossValidationRegion}/{pid}/{auxid}/indices_scanonly'][:])
+                new_boot_inds_scanonly = aux_inds if bootstrap_indices is None else torch.cat((new_boot_inds_scanonly,aux_inds))
+            
+            bootstrap_indices = new_boot_inds if bootstrap_indices is None else torch.cat((bootstrap_indices,new_boot_inds))
+            bootstrap_inds_scanonly = new_boot_inds_scanonly if bootstrap_inds_scanonly is None else torch.cat((bootstrap_inds_scanonly,new_boot_inds_scanonly))
+
+        bootstrap_dataset = torch.utils.data.Subset(dataset, bootstrap_indices)
+        finetune_data_loader = data.DataLoader(bootstrap_dataset, batch_size=len(bootstrap_dataset), shuffle=True, num_workers=0, drop_last=True)
+
+        bootstrap_scanonly_dataset = torch.utils.data.Subset(dataset_scanonly, bootstrap_inds_scanonly)
+        fso_data_loader = data.DataLoader(bootstrap_scanonly_dataset, batch_size=len(bootstrap_scanonly_dataset), shuffle=True, num_workers=0, drop_last=True)
 
     ###
     # Load the endmember spectra and rhorads:
@@ -193,20 +234,31 @@ if __name__ == "__main__":
         seedrrs = torch.ones(seedrrs.shape).to(device)
 
     # Move relevant datasets to the GPU
-    trainingGTmsoc = dataset.dataset[train_indices,-1].to(device)
-    trainingGTspec = dataset.dataset[train_indices,:-1].to(device)
+    trainingGTmsoc = dataset.dataset[train_indices,-5].to(device)
+    trainingGTspec = dataset.dataset[train_indices,:-5].to(device)
+    trainingSOspec = dataset_scanonly.dataset[tso_indices,:].to(device)
 
-    validationGTmsoc = None if args.fullFit and args.trainValSplit < 0 else dataset.dataset[val_indices,-1].to(device)
-    validationGTspec = None if args.fullFit and args.trainValSplit < 0 else dataset.dataset[val_indices,:-1].to(device)
+    validationGTmsoc = None if args.fullFit and args.trainValSplit < 0 else dataset.dataset[val_indices,-5].to(device)
+    validationGTspec = None if args.fullFit and args.trainValSplit < 0 else dataset.dataset[val_indices,:-5].to(device)
+    validationSOspec = None if args.fullFit and args.trainValSplit < 0 else dataset_scanonly.dataset[vso_indices,:].to(device)
 
-    finetuneGTmsoc = None if args.fullFit else dataset.dataset[bootstrap_indices,-1].to(device)
-    finetuneGTspec = None if args.fullFit else dataset.dataset[bootstrap_indices,:-1].to(device)
+    finetuneGTmsoc = None if args.fullFit else dataset.dataset[bootstrap_indices,-5].to(device)
+    finetuneGTspec = None if args.fullFit else dataset.dataset[bootstrap_indices,:-5].to(device)
+    finetuneSOspec = None if args.fullFit else dataset_scanonly.dataset[bootstrap_inds_scanonly,:].to(device)
 
     valb_indices = None if args.fullFit else [i for i in val_indices if i not in bootstrap_indices]
-    finetuneValGTmsoc = None if args.fullFit else dataset.dataset[valb_indices,-1].to(device)
-    finetuneValGTspec = None if args.fullFit else dataset.dataset[valb_indices,:-1].to(device)
+    valso_indices = None if args.fullFit else [i for i in vso_indices if i not in bootstrap_inds_scanonly]
+
+    finetuneValGTmsoc = None if args.fullFit else dataset.dataset[valb_indices,-5].to(device)
+    finetuneValGTspec = None if args.fullFit else dataset.dataset[valb_indices,:-5].to(device)
+    finetuneValSOspec = None if args.fullFit else dataset_scanonly.dataset[valso_indices,:].to(device)
+
+    """ ############################################################################################
+        Prepare datasets
+    """
 
     # Save the training and validation indices for this run
+    # if we are doing a full fit with train/val split 
     if args.fullFit and args.trainValSplit < 0 :
         np.save(f"models/{runName}_training_indices.npy", train_indices)
         np.save(f"models/{runName}_validation_indices.npy", val_indices)
@@ -215,6 +267,7 @@ if __name__ == "__main__":
         Prepare models
     """
 
+    # Basic model parameters
     KEndmembers = seedrrs.shape[0]
     MSpectra = seedFs.shape[1]
     NSpectra = len(dataset)
