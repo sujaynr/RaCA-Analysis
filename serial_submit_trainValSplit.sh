@@ -20,7 +20,7 @@ export modelType="s"
 #########################################################################################
 # Submit jobs for train-val split over all regions
 
-for randomSeed in 100390439 23039 4054950 534
+for randomSeed in 438923819 31929 884932 20091 483999992 # 0 100390439 23039 4054950 534
 do
     echo "\t\t - Running model $modelType with no decoder"
     python updatedTrain.py --encoderModel $modelType \
