@@ -3,6 +3,7 @@ import pdb
 import time
 import argparse
 import random
+from copy import deepcopy
 
 # Third-party libraries
 import numpy as np
@@ -75,6 +76,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch",      type=int, default=75,       help="Batch Size")
     parser.add_argument("--logName",    type=str, default="test",   help="Base name for output files.") 
     parser.add_argument("--trainValSplit", type=float, default=-1, help="Fraction of each region to use for validation. Negative number means use site-based cross-validation.")
+    parser.add_argument("--bootstrapSplit", type=float, default=1, help="Fraction of validation combustion label data to use for fine-tuning. Only applicable when using fullFit and trainValSplit.")
 
     parser.add_argument("--noDecoder",      default=False, action='store_true', help="Flag to disable decoder model and only consider end-to-end encoder performance.") 
     parser.add_argument("--disableRhorads", default=False, action='store_true', help="Flag to disable conversion of mass abundance to area abundance via rhorads.") 
@@ -218,6 +220,21 @@ if __name__ == "__main__":
             bootstrap_indices = new_boot_inds if bootstrap_indices is None else torch.cat((bootstrap_indices,new_boot_inds))
             bootstrap_inds_scanonly = new_boot_inds_scanonly if bootstrap_inds_scanonly is None else torch.cat((bootstrap_inds_scanonly,new_boot_inds_scanonly))
 
+        bootstrap_dataset = torch.utils.data.Subset(dataset, bootstrap_indices)
+        finetune_data_loader = data.DataLoader(bootstrap_dataset, batch_size=len(bootstrap_dataset), shuffle=True, num_workers=0, drop_last=True)
+
+        bootstrap_scanonly_dataset = torch.utils.data.Subset(dataset_scanonly, bootstrap_inds_scanonly)
+        fso_data_loader = data.DataLoader(bootstrap_scanonly_dataset, batch_size=len(bootstrap_scanonly_dataset), shuffle=True, num_workers=0, drop_last=True)
+    
+    elif args.trainValSplit > 0 :
+
+        # Split the validation indices into a bootstrap set with fewer labels but all of the scan data
+        bootstrap_indices = deepcopy(val_indices)
+        bootstrap_indices = bootstrap_indices[torch.randperm(len(val_indices))]
+        bootstrap_indices = bootstrap_indices[:int(args.bootstrapSplit*len(val_indices))]
+
+        bootstrap_inds_scanonly = deepcopy(vso_indices)
+        
         bootstrap_dataset = torch.utils.data.Subset(dataset, bootstrap_indices)
         finetune_data_loader = data.DataLoader(bootstrap_dataset, batch_size=len(bootstrap_dataset), shuffle=True, num_workers=0, drop_last=True)
 
