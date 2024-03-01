@@ -235,24 +235,24 @@ if __name__ == "__main__":
         seedrrs = torch.ones(seedrrs.shape).to(device)
 
     # Move relevant datasets to the GPU
-    trainingGTmsoc = dataset.dataset[train_indices,-5].to(device)
-    trainingGTspec = dataset.dataset[train_indices,:-5].to(device)
-    trainingSOspec = dataset_scanonly.dataset[tso_indices,:].to(device)
+    trainingGTmsoc = dataset.dataset[train_indices,-5].to(device).float()
+    trainingGTspec = dataset.dataset[train_indices,:-5].to(device).float()
+    trainingSOspec = dataset_scanonly.dataset[tso_indices,:].to(device).float()
 
-    validationGTmsoc = None if args.fullFit and args.trainValSplit < 0 else dataset.dataset[val_indices,-5].to(device)
-    validationGTspec = None if args.fullFit and args.trainValSplit < 0 else dataset.dataset[val_indices,:-5].to(device)
-    validationSOspec = None if args.fullFit and args.trainValSplit < 0 else dataset_scanonly.dataset[vso_indices,:].to(device)
+    validationGTmsoc = None if args.fullFit and args.trainValSplit < 0 else dataset.dataset[val_indices,-5].to(device).float()
+    validationGTspec = None if args.fullFit and args.trainValSplit < 0 else dataset.dataset[val_indices,:-5].to(device).float()
+    validationSOspec = None if args.fullFit and args.trainValSplit < 0 else dataset_scanonly.dataset[vso_indices,:].to(device).float()
 
-    finetuneGTmsoc = None if args.fullFit else dataset.dataset[bootstrap_indices,-5].to(device)
-    finetuneGTspec = None if args.fullFit else dataset.dataset[bootstrap_indices,:-5].to(device)
-    finetuneSOspec = None if args.fullFit else dataset_scanonly.dataset[bootstrap_inds_scanonly,:].to(device)
+    finetuneGTmsoc = None if args.fullFit else dataset.dataset[bootstrap_indices,-5].to(device).float()
+    finetuneGTspec = None if args.fullFit else dataset.dataset[bootstrap_indices,:-5].to(device).float()
+    finetuneSOspec = None if args.fullFit else dataset_scanonly.dataset[bootstrap_inds_scanonly,:].to(device).float()
 
     valb_indices = None if args.fullFit else [i for i in val_indices if i not in bootstrap_indices]
     valso_indices = None if args.fullFit else [i for i in vso_indices if i not in bootstrap_inds_scanonly]
 
-    finetuneValGTmsoc = None if args.fullFit else dataset.dataset[valb_indices,-5].to(device)
-    finetuneValGTspec = None if args.fullFit else dataset.dataset[valb_indices,:-5].to(device)
-    finetuneValSOspec = None if args.fullFit else dataset_scanonly.dataset[valso_indices,:].to(device)
+    finetuneValGTmsoc = None if args.fullFit else dataset.dataset[valb_indices,-5].to(device).float()
+    finetuneValGTspec = None if args.fullFit else dataset.dataset[valb_indices,:-5].to(device).float()
+    finetuneValSOspec = None if args.fullFit else dataset_scanonly.dataset[valso_indices,:].to(device).float()
 
     """ ############################################################################################
         Prepare datasets
@@ -343,7 +343,9 @@ if __name__ == "__main__":
         # Batching and training
         for batch_data in training_data_loader:
             # Extract batch data
-            batch_tIs, batch_tmsoc = batch_data[:,:-5].to(device, dtype=float), batch_data[:,-5].to(device, dtype=float)
+            batch_tIs, batch_tmsoc = batch_data[:,:-5].to(device), batch_data[:,-5].to(device)
+            batch_tIs = batch_tIs.float()
+            batch_tmsoc = batch_tmsoc.float()
 
             # Get abundance predictions from the encoder for the batch
             encoderPreds = encoder_model(batch_tIs)
@@ -404,7 +406,7 @@ if __name__ == "__main__":
 
                 for batch_dataV in validation_data_loader:
 
-                    batch_val_tIs, batch_val_tmsoc = batch_dataV[:,:-5].to(device), batch_dataV[:,-5].to(device)
+                    batch_val_tIs, batch_val_tmsoc = batch_dataV[:,:-5].to(device).float(), batch_dataV[:,-5].to(device).float()
 
                     encoderPredsV = encoder_model(batch_val_tIs)
                     decoderPredsV = None if args.noDecoder else decoder_model(encoderPredsV)
@@ -436,7 +438,7 @@ if __name__ == "__main__":
 
                 # Compute metrics for training set
                 trainingRMSEP = torch.sqrt(torch.mean((trainingEncoderPreds[:, -1] - trainingGTmsoc) ** 2))
-                trainingR2 = r2_score(trainingGTmsoc, trainingEncoderPreds[:, -1])
+                trainingR2 = r2_score(trainingGTmsoc.cpu(), trainingEncoderPreds[:, -1].cpu())
                 trainingBias = torch.mean(trainingEncoderPreds[:, -1] - trainingGTmsoc)
                 trainingRPD = torch.std(trainingEncoderPreds[:, -1]) / torch.std(trainingGTmsoc)
 
@@ -458,7 +460,7 @@ if __name__ == "__main__":
                     validationDecoderPreds = None if args.noDecoder else decoder_model(validationEncoderPreds)
 
                     validationRMSEP = torch.sqrt(torch.mean((validationEncoderPreds[:, -1] - validationGTmsoc) ** 2))
-                    validationR2 = r2_score(validationGTmsoc, validationEncoderPreds[:, -1])
+                    validationR2 = r2_score(validationGTmsoc.cpu(), validationEncoderPreds[:, -1].cpu())
                     validationBias = torch.mean(validationEncoderPreds[:, -1] - validationGTmsoc)
                     validationRPD = torch.std(validationEncoderPreds[:, -1]) / torch.std(validationGTmsoc)
 
