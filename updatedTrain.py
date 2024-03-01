@@ -50,15 +50,15 @@ class HDF5Dataset(data.Dataset):
         self.scanonly = '' if not scanonly else '_scanonly'
 
         if gpu :
-            self.dataset = torch.tensor(self.file_mag['data'+self.scanonly][:]).to(device)
+            self.dataset = torch.tensor(self.file_mag['data'+self.scanonly][:],dtype=torch.double).to(device)
         else :
-            self.dataset = torch.tensor(self.file_mag['data'+self.scanonly][:])
+            self.dataset = torch.tensor(self.file_mag['data'+self.scanonly][:],dtype=torch.double)
 
     def __len__(self):
         return self.dataset.shape[0]
 
     def __getitem__(self, index):
-        return self.dataset[index+self.scanonly,:]
+        return self.dataset[index,:]
 
 
 """ ############################################################################################
@@ -343,7 +343,7 @@ if __name__ == "__main__":
         # Batching and training
         for batch_data in training_data_loader:
             # Extract batch data
-            batch_tIs, batch_tmsoc = batch_data[:,:-5].to(device), batch_data[:,-5].to(device)
+            batch_tIs, batch_tmsoc = batch_data[:,:-5].to(device, dtype=float), batch_data[:,-5].to(device, dtype=float)
 
             # Get abundance predictions from the encoder for the batch
             encoderPreds = encoder_model(batch_tIs)
