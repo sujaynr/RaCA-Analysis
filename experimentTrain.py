@@ -86,7 +86,6 @@ class HDF5Dataset(data.Dataset):
 
 #         return noisy_data_item
 
-
 """ ############################################################################################
     To run this script, use the following command:
         
