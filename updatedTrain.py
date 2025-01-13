@@ -5,6 +5,7 @@ import time
 import argparse
 import random
 from copy import deepcopy
+from copy import deepcopy
 
 # Third-party libraries
 import numpy as np
@@ -54,9 +55,9 @@ class HDF5Dataset(data.Dataset):
         self.scanonly = '' if not scanonly else '_scanonly'
 
         if gpu :
-            self.dataset = torch.tensor(self.file_mag['data'+self.scanonly][:]).to(device)
+            self.dataset = torch.tensor(self.file_mag['data'+self.scanonly][:],dtype=torch.double).to(device)
         else :
-            self.dataset = torch.tensor(self.file_mag['data'+self.scanonly][:])
+            self.dataset = torch.tensor(self.file_mag['data'+self.scanonly][:],dtype=torch.double)
 
     def __len__(self):
         return self.dataset.shape[0]
