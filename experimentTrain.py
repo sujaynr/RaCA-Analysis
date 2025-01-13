@@ -270,6 +270,7 @@ if __name__ == "__main__":
     if not args.tsoBatch:
 
         if args.scanSplit > 0:
+            print("no tso batch, scan split")
             # Sizes of individual labeled datasets
             size_validation_dataset = len(validation_dataset)
             size_training_dataset = len(training_dataset)
@@ -302,7 +303,10 @@ if __name__ == "__main__":
             tso_data_loader = data.DataLoader(tso_dataset, batch_size=tso_batch, shuffle=True, num_workers=0, drop_last=True)
             vso_data_loader = data.DataLoader(vso_dataset, batch_size=vso_batch, shuffle=True, num_workers=0, drop_last=True)
 
+            pdb.set_trace()
+
         else:
+            print("no tso batch, no scan split")
             validation_data_loader = data.DataLoader(validation_dataset, batch_size=args.batch, shuffle=True, num_workers=0, drop_last=True)
             
 
@@ -311,13 +315,14 @@ if __name__ == "__main__":
             train_batch = len(training_dataset) // num_batches
             tso_batch = len(tso_dataset) // num_batches
 
-            training_data_loader = data.DataLoader(training_dataset, batch_size=args.batch, shuffle=True, num_workers=0, drop_last=True)
+            training_data_loader = data.DataLoader(training_dataset, batch_size=train_batch, shuffle=True, num_workers=0, drop_last=True)
             tso_data_loader = data.DataLoader(tso_dataset, batch_size=tso_batch, shuffle=True, num_workers=0, drop_last=True)
             vso_data_loader = data.DataLoader(vso_dataset, batch_size=vso_batch, shuffle=True, num_workers=0, drop_last=True)
     else:
 
     # TSO WAY (BETTER WAY)
         if args.scanSplit > 0:
+            print("tso batch, scan split")
             # Sizes of individual labeled datasets
             size_validation_dataset = len(validation_dataset)
             size_training_dataset = len(training_dataset)
@@ -351,16 +356,17 @@ if __name__ == "__main__":
             vso_data_loader = data.DataLoader(vso_dataset, batch_size=vso_batch, shuffle=True, num_workers=0, drop_last=True)
 
         else:
-            validation_data_loader = data.DataLoader(validation_dataset, batch_size=args.batch, shuffle=True, num_workers=0, drop_last=True)
+            print("tso batch, no scan split")
+            tso_data_loader = data.DataLoader(tso_dataset, batch_size = args.batch, shuffle = True, num_workers = 0, drop_last = True)
+            num_batches = len(tso_data_loader)
             
-
-            num_batches = len(validation_data_loader)
             vso_batch = len(vso_dataset) // num_batches
             train_batch = len(training_dataset) // num_batches
-            tso_batch = len(tso_dataset) // num_batches
+            val_batch = len(validation_dataset) // num_batches
+            
 
-            training_data_loader = data.DataLoader(training_dataset, batch_size=args.batch, shuffle=True, num_workers=0, drop_last=True)
-            tso_data_loader = data.DataLoader(tso_dataset, batch_size=tso_batch, shuffle=True, num_workers=0, drop_last=True)
+            training_data_loader = data.DataLoader(training_dataset, batch_size=train_batch, shuffle=True, num_workers=0, drop_last=True)
+            validation_data_loader = data.DataLoader(validation_dataset, batch_size=val_batch, shuffle=True, num_workers=0, drop_last=True)
             vso_data_loader = data.DataLoader(vso_dataset, batch_size=vso_batch, shuffle=True, num_workers=0, drop_last=True)
 
     

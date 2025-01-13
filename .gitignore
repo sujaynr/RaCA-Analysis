@@ -1,4 +1,7 @@
 wandb/
-data_utils/RaCA-full-dataset.csv
+data_utils/
 models/
 *.pyc
+socPlots/
+socPlots4000/
+socPlotsBS/
